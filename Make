@@ -1,0 +1,14 @@
+-R . QeditasTheory
+
+Addrs.v
+Assets.v
+Blocks.v
+CryptoHashes.v
+CryptoSignatures.v
+CTreeGrafting.v
+CTrees.v
+LedgerStates.v
+MathData.v
+MTrees.v
+Prelude.v
+Transactions.v
