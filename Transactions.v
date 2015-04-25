@@ -83,15 +83,15 @@ Inductive inpl_reln {n:nat} (alphapre:bitseq n -> addr) : list addr_assetid -> l
     -> inpl_reln alphapre ((alphapre gamma,h)::fullinpl) ((gamma,h)::inpl)
 .
 
-Inductive outpl_reln (txh:hashval) {n:nat} (alphapre:bitseq n -> addr) : nat -> list addr_preasset -> list (bitseq n * asset) -> Prop :=
-| outpl_reln_nil i : outpl_reln txh alphapre i nil nil
+Inductive outpl_reln (bday:nat) (txh:hashval) {n:nat} (alphapre:bitseq n -> addr) : nat -> list addr_preasset -> list (bitseq n * asset) -> Prop :=
+| outpl_reln_nil i : outpl_reln bday txh alphapre i nil nil
 | outpl_reln_skip i fulloutpl outpl alpha u :
     (forall gamma:bitseq n, alphapre gamma <> alpha)
-    -> outpl_reln txh alphapre (S i) fulloutpl outpl
-    -> outpl_reln txh alphapre i ((alpha,u)::fulloutpl) outpl
+    -> outpl_reln bday txh alphapre (S i) fulloutpl outpl
+    -> outpl_reln bday txh alphapre i ((alpha,u)::fulloutpl) outpl
 | outpl_reln_cons i fulloutpl outpl gamma u :
-    outpl_reln txh alphapre (S i) fulloutpl outpl
-    -> outpl_reln txh alphapre i ((alphapre gamma,u)::fulloutpl) ((gamma,(hashpair txh (hashnat i),u))::outpl)
+    outpl_reln bday txh alphapre (S i) fulloutpl outpl
+    -> outpl_reln bday txh alphapre i ((alphapre gamma,u)::fulloutpl) ((gamma,(hashpair txh (hashnat i),(bday,u)))::outpl)
 .
 
 Lemma inpl_reln_start fullinpl :
@@ -103,12 +103,12 @@ induction fullinpl as [|[alpha h] fullinpl IH].
   apply IH.
 Qed.
 
-Lemma outpl_reln_start txh fulloutpl j :
-  outpl_reln txh (fun alpha : addr => alpha) j fulloutpl (add_vout txh fulloutpl j).
+Lemma outpl_reln_start bday txh fulloutpl j :
+  outpl_reln bday txh (fun alpha : addr => alpha) j fulloutpl (add_vout bday txh fulloutpl j).
 revert j. induction fulloutpl as [|[alpha [obl u]] fulloutpl IH].
 - simpl. apply outpl_reln_nil.
 - simpl. intros j.
-  apply (outpl_reln_cons txh (fun alpha:addr => alpha) j fulloutpl (add_vout txh fulloutpl (S j)) alpha (obl,u)).
+  apply (outpl_reln_cons bday txh (fun alpha:addr => alpha) j fulloutpl (add_vout bday txh fulloutpl (S j)) alpha (obl,u)).
   apply IH.
 Qed.
 
@@ -132,11 +132,11 @@ intros H0 H. induction H as [|fullinpl inpl alpha k H1 H2 IH|fullinpl inpl delta
     * right. now apply IH.
 Qed.
 
-Lemma outpl_reln_new_assets_eq1 (fulloutpl:list addr_preasset) (txh:hashval) :
+Lemma outpl_reln_new_assets_eq1 (bday:nat) (fulloutpl:list addr_preasset) (txh:hashval) :
   forall j, forall (outpl:list (bitseq 0 * asset)%type),
   forall (alphapre:bitseq 0 -> addr),
-    outpl_reln txh alphapre j fulloutpl outpl ->
-    new_assets (alphapre tt) fulloutpl txh j = map (snd (B:=asset)) outpl.
+    outpl_reln bday txh alphapre j fulloutpl outpl ->
+    new_assets bday (alphapre tt) fulloutpl txh j = map (snd (B:=asset)) outpl.
 intros j outpl alphapre H.
 induction H as [j|j fulloutpl outpl alpha [obl u] H1 H2 IH|j fulloutpl outpl [] [obl u] H1 IH].
 - simpl. reflexivity.
@@ -184,12 +184,12 @@ intros Hapi H. induction H as [|fullinpl inpl alpha h H1 H2 IH|fullinpl inpl [[|
   + exact IH.
 Qed.
 
-Lemma outpl_reln_strip_bitseq_false (txh:hashval) {n:nat} 
+Lemma outpl_reln_strip_bitseq_false bday (txh:hashval) {n:nat} 
       (alphapre:bitseq (S n) -> addr) (fulloutpl:list addr_preasset) (outpl:list (bitseq (S n) * asset)%type) :
   (forall gamma delta, alphapre gamma = alphapre delta -> gamma = delta) ->
   forall j,
-  outpl_reln txh alphapre j fulloutpl outpl ->
-  outpl_reln txh (fun gamma => alphapre (false,gamma)) j fulloutpl (strip_bitseq_false outpl).
+  outpl_reln bday txh alphapre j fulloutpl outpl ->
+  outpl_reln bday txh (fun gamma => alphapre (false,gamma)) j fulloutpl (strip_bitseq_false outpl).
 intros Hapi j H. induction H as [j|j fulloutpl outpl alpha u H1 H2 IH|j fulloutpl outpl [[|] gamma] u H1 IH].
 - simpl. apply outpl_reln_nil.
 - simpl. apply outpl_reln_skip.
@@ -199,23 +199,23 @@ intros Hapi j H. induction H as [j|j fulloutpl outpl alpha u H1 H2 IH|j fulloutp
   + intros gamma' H2. apply Hapi in H2. inversion H2.
   + exact IH.
 - simpl.
-  apply (outpl_reln_cons txh (fun gamma => alphapre (false,gamma)) j fulloutpl (strip_bitseq_false outpl) gamma u).
+  apply (outpl_reln_cons bday txh (fun gamma => alphapre (false,gamma)) j fulloutpl (strip_bitseq_false outpl) gamma u).
   exact IH.
 Qed.
 
-Lemma outpl_reln_strip_bitseq_true (txh:hashval) {n:nat} 
+Lemma outpl_reln_strip_bitseq_true bday (txh:hashval) {n:nat} 
       (alphapre:bitseq (S n) -> addr) (fulloutpl:list addr_preasset) (outpl:list (bitseq (S n) * asset)%type) :
   (forall gamma delta, alphapre gamma = alphapre delta -> gamma = delta) ->
   forall j,
-  outpl_reln txh alphapre j fulloutpl outpl ->
-  outpl_reln txh (fun gamma => alphapre (true,gamma)) j fulloutpl (strip_bitseq_true outpl).
+  outpl_reln bday txh alphapre j fulloutpl outpl ->
+  outpl_reln bday txh (fun gamma => alphapre (true,gamma)) j fulloutpl (strip_bitseq_true outpl).
 intros Hapi j H. induction H as [j|j fulloutpl outpl alpha u H1 H2 IH|j fulloutpl outpl [[|] gamma] u H1 IH].
 - simpl. apply outpl_reln_nil.
 - simpl. apply outpl_reln_skip.
   + intros gamma. apply H1.
   + exact IH.
 - simpl.
-  apply (outpl_reln_cons txh (fun gamma => alphapre (true,gamma)) j fulloutpl (strip_bitseq_true outpl) gamma u).
+  apply (outpl_reln_cons bday txh (fun gamma => alphapre (true,gamma)) j fulloutpl (strip_bitseq_true outpl) gamma u).
   exact IH.
 - simpl. apply outpl_reln_skip.
   + intros gamma' H2. apply Hapi in H2. inversion H2.
@@ -235,12 +235,12 @@ induction fullinpl as [|[alpha k] fullinpl IH].
   + now apply IH.
 Qed.
 
-Lemma outpl_reln_nil_no_new_assets_lem {n:nat} (fulloutpl:list addr_preasset) (txh:hashval) (alphapre:bitseq n -> addr) :
+Lemma outpl_reln_nil_no_new_assets_lem {n:nat} bday (fulloutpl:list addr_preasset) (txh:hashval) (alphapre:bitseq n -> addr) :
     forall j,
-    outpl_reln txh alphapre j fulloutpl nil
+    outpl_reln bday txh alphapre j fulloutpl nil
     ->
     forall gamma:bitseq n,
-      new_assets (alphapre gamma) fulloutpl txh j = nil.
+      new_assets bday (alphapre gamma) fulloutpl txh j = nil.
 induction fulloutpl as [|[alpha [obl u]] fulloutpl IH].
 - intros j _ gamma. reflexivity.
 - intros j H1 gamma. inversion H1. simpl.

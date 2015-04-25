@@ -205,6 +205,28 @@ match h1 with
   | None => hashpair (hashnat 1) h2
 end.
 
+Lemma hashopair1inj h1 h2 h1' h2' : hashopair1 h1 h2 = hashopair1 h1' h2' -> h1 = h1' /\ h2 = h2'.
+destruct h2 as [h2|]; destruct h2' as [h2'|]; simpl; intros H; try discriminate H.
+- inversion H. apply hashpairinj in H1. destruct H1 as [H2 H3]. apply hashpairinj in H3.
+  destruct H3 as [H4 H5]. apply hashpairinj in H5. destruct H5 as [H6 H7].
+  split; congruence.
+- inversion H. apply hashpairinj in H1. destruct H1 as [H2 H3]. apply hashnatinj in H2. discriminate H2.
+- inversion H. apply hashpairinj in H1. destruct H1 as [H2 H3]. apply hashnatinj in H2. discriminate H2.
+- inversion H. apply hashpairinj in H1. destruct H1 as [H2 H3].
+  split; congruence.
+Qed.
+
+Lemma hashopair2inj h1 h2 h1' h2' : hashopair2 h1 h2 = hashopair2 h1' h2' -> h1 = h1' /\ h2 = h2'.
+destruct h1 as [h1|]; destruct h1' as [h1'|]; simpl; intros H; try discriminate H.
+- inversion H. apply hashpairinj in H1. destruct H1 as [H2 H3]. apply hashpairinj in H3.
+  destruct H3 as [H4 H5]. apply hashpairinj in H5. destruct H5 as [H6 H7].
+  split; congruence.
+- inversion H. apply hashpairinj in H1. destruct H1 as [H2 H3]. apply hashnatinj in H2. discriminate H2.
+- inversion H. apply hashpairinj in H1. destruct H1 as [H2 H3]. apply hashnatinj in H2. discriminate H2.
+- inversion H. apply hashpairinj in H1. destruct H1 as [H2 H3].
+  split; congruence.
+Qed.
+
 Fixpoint ohashlist (hl:list hashval) : option hashval :=
 match hl with
 | nil => None
@@ -304,6 +326,16 @@ intros H1 H2. apply (subh_irrefl h).
 now apply subh_tra with (h2 := h').
 Qed.
 
+Definition ohashval_eq_dec (h h':option hashval) : {h = h'} + {h <> h'}.
+destruct h as [h|]; destruct h' as [h'|].
+- destruct (hashval_eq_dec h h') as [H|H].
+  + left. congruence.
+  + right. intros H'. inversion H'. contradiction (H H1).
+- right. discriminate.
+- right. discriminate.
+- left. reflexivity.
+Defined.
+
 (***
  Finally assume parameters for turning hashvals into an addresses.
  We do not assume they are injective or have disjoint images.
@@ -317,5 +349,9 @@ Parameter hashval_p2sh_addr : hashval -> addr.
 Parameter hashval_term_addr : hashval -> addr.
 Parameter hashval_intention_addr : hashval -> addr.
 
-
+(***
+ Also assume a way of serializing hashes.
+ ***)
+Parameter ser_hashval : hashval -> list nat.
+Axiom ser_hashval_inj : forall h h' l l', ser_hashval h ++ l = ser_hashval h' ++ l' -> l = l' /\ h = h'.
 
