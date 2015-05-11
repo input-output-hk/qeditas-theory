@@ -18,12 +18,6 @@ induction n as [|n IHn].
 - destruct bs1 as [b1 bs1], bs2 as [b2 bs2]. repeat decide equality.
 Defined.
 
-Definition addr := bitseq 162.
-
-Definition addr_eq_dec (a1 a2: addr) : { a1 = a2 } + { a1 <> a2 }.
-apply bitseq_eq_dec.
-Defined.
-
 Fixpoint listbool_bitseq (bl:list bool) : bitseq (length bl) :=
 match bl with
 | nil => tt
@@ -103,4 +97,99 @@ match n as n' return bitseq n' -> bitseq (n'+m) with
 | O => fun _ => br
 | S n => fun bs => let (b,bs') := bs in (b,bitseq_concat bs' br)
 end bs.
+
+Definition termaddr := bitseq 160.
+
+Definition termaddr_eq_dec (a1 a2: termaddr) : { a1 = a2 } + { a1 <> a2 }.
+apply bitseq_eq_dec.
+Defined.
+
+Definition pubaddr := bitseq 160.
+
+Definition pubaddr_eq_dec (a1 a2: pubaddr) : { a1 = a2 } + { a1 <> a2 }.
+apply bitseq_eq_dec.
+Defined.
+
+Definition payaddr := bitseq 161.
+
+Definition payaddr_eq_dec (a1 a2: payaddr) : { a1 = a2 } + { a1 <> a2 }.
+apply bitseq_eq_dec.
+Defined.
+
+Definition addr := bitseq 162.
+
+Definition addr_eq_dec (a1 a2: addr) : { a1 = a2 } + { a1 <> a2 }.
+apply bitseq_eq_dec.
+Defined.
+
+Definition payaddr_addr (alpha:payaddr) : addr := (false,alpha).
+
+Definition termaddr_addr (a:termaddr) : addr := (true,(false,a)).
+
+Definition pubaddr_addr (a:termaddr) : addr := (true,(true,a)).
+
+Lemma payaddr_addr_inj a b : payaddr_addr a = payaddr_addr b -> a = b.
+intros H1. destruct a as [[|] a]; destruct b as [[|] b]; try discriminate H1.
+- inversion H1. congruence.
+- inversion H1. congruence.
+Qed.
+
+Lemma termaddr_addr_inj a b : termaddr_addr a = termaddr_addr b -> a = b.
+intros H1. destruct a as [[|] [[|] a]]; destruct b as [[|] [[|] b]]; try discriminate H1.
+- inversion H1. congruence.
+- inversion H1. congruence.
+- inversion H1. congruence.
+- inversion H1. congruence.
+Qed.
+
+Lemma pubaddr_addr_inj a b : pubaddr_addr a = pubaddr_addr b -> a = b.
+intros H1. destruct a as [[|] [[|] a]]; destruct b as [[|] [[|] b]]; try discriminate H1.
+- inversion H1. congruence.
+- inversion H1. congruence.
+- inversion H1. congruence.
+- inversion H1. congruence.
+Qed.
+
+Definition p2pkh_payaddr_p (alpha:payaddr) : Prop :=
+  match alpha with
+    | (false,_) => True
+    | _ => False
+  end.
+
+Definition p2sh_payaddr_p (alpha:payaddr) : Prop :=
+  match alpha with
+    | (true,_) => True
+    | _ => False
+  end.
+
+Definition p2pkh_addr_p (alpha:addr) : Prop :=
+  match alpha with
+    | (false,(false,_)) => True
+    | _ => False
+  end.
+
+Definition p2sh_addr_p (alpha:addr) : Prop :=
+  match alpha with
+    | (false,(true,_)) => True
+    | _ => False
+  end.
+
+Definition pay_addr_p (alpha:addr) : Prop :=
+  match alpha with
+    | (false,_) => True
+    | _ => False
+  end.
+
+Definition term_addr_p (alpha:addr) : Prop :=
+  match alpha with
+    | (true,(false,_)) => True
+    | _ => False
+  end.
+
+Definition publication_addr_p (alpha:addr) : Prop :=
+  match alpha with
+    | (true,(true,_)) => True
+    | _ => False
+  end.
+
 
