@@ -14,28 +14,28 @@ Module Type SignatType.
 
   Parameter signat : Type.
   Parameter privkey : Type.
-  Parameter privkey_addr : privkey -> addr.
+  Parameter privkey_payaddr : privkey -> payaddr.
   Parameter sign : privkey -> hashval -> nat -> signat.
-  Parameter check_signat : hashval -> signat -> addr -> Prop.
+  Parameter check_signat : hashval -> signat -> payaddr -> Prop.
 
-  Axiom privkey_addr_inj : forall key key', privkey_addr key = privkey_addr key' -> key = key'.
-  Axiom signat_prop : forall r key alpha h, privkey_addr key = alpha -> check_signat h (sign key h r) alpha.
+  Axiom privkey_payaddr_inj : forall key key', privkey_payaddr key = privkey_payaddr key' -> key = key'.
+  Axiom signat_prop : forall r key alpha h, privkey_payaddr key = alpha -> check_signat h (sign key h r) alpha.
 
 End SignatType.
 
 Module Signat : SignatType.
 
   Definition signat := unit.
-  Definition privkey := addr.
-  Definition privkey_addr : privkey -> addr := fun alpha => alpha.
+  Definition privkey := payaddr.
+  Definition privkey_payaddr : privkey -> payaddr := fun alpha => alpha.
   Definition sign : privkey -> hashval -> nat -> signat := fun _ _ _ => tt.
-  Definition check_signat : hashval -> signat -> addr -> Prop := fun _ _ _ => True.
+  Definition check_signat : hashval -> signat -> payaddr -> Prop := fun _ _ _ => True.
 
-  Theorem privkey_addr_inj (key key':privkey) : privkey_addr key = privkey_addr key' -> key = key'.
+  Theorem privkey_payaddr_inj (key key':privkey) : privkey_payaddr key = privkey_payaddr key' -> key = key'.
     intros H. exact H.
   Qed.
 
-  Theorem signat_prop r key alpha h : privkey_addr key = alpha -> check_signat h (sign key h r) alpha.
+  Theorem signat_prop r key alpha h : privkey_payaddr key = alpha -> check_signat h (sign key h r) alpha.
     intros _. unfold check_signat. tauto.
   Qed.
 

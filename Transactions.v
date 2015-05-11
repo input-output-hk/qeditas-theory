@@ -264,15 +264,19 @@ Definition tx_outputs_valid (blockheight:nat) (outpl:list addr_preasset) : Prop 
   ->
   i = i' /\ obl = obl' /\ beta = beta' /\ u = u')
 /\
-(***
- intentions can only be created if they must wait at least 10 confirmations to be used. 10 is arbitrary of course.
- The point is that an intention must be publicly known for some time before
- they can be used.
- This means a tx might become invalid before it's confirmed, in which
- case it would need to be retried with a bigger b value in the obligation.
- ***)
-(forall alpha a b beta,
-   In (alpha,(Some(a,b),intention beta)) outpl -> blockheight + 10 < b)
+(*** Ownership deeds must sent to term addresses (the address of the owned term). ***)
+(forall alpha obl b beta u,
+   In (alpha,(obl,owns b beta u)) outpl -> term_addr_p alpha)
+/\
+(*** Publications must be sent to publication addresses. This is to make it easy for nodes to abstract away all of this part of the tree. ***)
+(forall alpha obl beta nonce thy,
+   In (alpha,(obl,theorypublication beta nonce thy)) outpl -> exists h, theoryspec_hashroot thy = Some h /\ pubaddr_addr (hashval_pubaddr h) = alpha)
+/\
+(forall alpha obl beta nonce th s,
+   In (alpha,(obl,signapublication beta nonce th s)) outpl -> pubaddr_addr (hashval_pubaddr (signaspec_hashroot th s)) = alpha)
+/\
+(forall alpha obl beta nonce th d,
+   In (alpha,(obl,docpublication beta nonce th d)) outpl -> pubaddr_addr (hashval_pubaddr (doc_hashroot th d)) = alpha)
 .
 
 Definition tx_valid (blockheight:nat) (tx:Tx) : Prop :=
@@ -281,14 +285,22 @@ tx_inputs_valid (tx_inputs tx) /\ tx_outputs_valid blockheight (tx_outputs tx).
 (*** Signed Transactions ***)
 Inductive gensignat : Type :=
 | ordinarysignat : signat -> gensignat
-| endorsedsignat : signat -> addr -> signat -> gensignat.
+| endorsedsignat : signat -> payaddr -> signat -> gensignat.
 
-Definition sTx : Type := prod Tx (list gensignat).
+Definition sTx : Type := prod Tx (prod (list gensignat) (list gensignat)).
 
 Definition check_spend_obligation (alpha:addr) (blockheight:nat) (h:hashval) (s:gensignat) (obl:obligation) : Prop :=
 match s,obl with
-| ordinarysignat s0,None => check_signat h s0 alpha
-| endorsedsignat s0 alpha1 s1,None => check_signat (hashaddr alpha1) s0 alpha /\ check_signat h s1 alpha1
+| ordinarysignat s0,None =>
+  match alpha with
+    | (false,alpha0) => check_signat h s0 alpha0 (*** only for payaddrs ***)
+    | (true,_) => False
+  end
+| endorsedsignat s0 alpha1 s1,None =>
+  match alpha with
+    | (false,alpha0) => check_signat (hashaddr (payaddr_addr alpha1)) s0 alpha0 /\ check_signat h s1 alpha1
+    | (true,_) => False
+  end
 | ordinarysignat s0,Some(gamma,b) =>
   (*** block height has been reached ***)
   b >= blockheight
@@ -298,21 +310,21 @@ match s,obl with
   (*** block height has been reached ***)
   b >= blockheight
   /\
-  check_signat (hashaddr alpha1) s0 gamma /\ check_signat h s1 alpha1
+  check_signat (hashaddr (payaddr_addr alpha1)) s0 gamma /\ check_signat h s1 alpha1
 end.
 
 Definition check_move_obligation (alpha:addr) (h:hashval) (s:gensignat) : Prop :=
-match s with
-| ordinarysignat s0 => check_signat h s0 alpha
-| _ => False
+match s,alpha with
+| ordinarysignat s0,(false,alpha0) => check_signat h s0 alpha0
+| _,_ => False
 end.
 
-Fixpoint check_tx_signatures (blockheight:nat) (h:hashval) (outpl:list addr_preasset)
+Fixpoint check_tx_in_signatures (blockheight:nat) (h:hashval) (outpl:list addr_preasset)
          (inpl:list addr_assetid) (al:list asset) (sl:list gensignat) : Prop :=
 match inpl,al,sl with
 | nil,nil,nil => True
 | (alpha,k)::inpr,(a::ar),(s::sr) =>
-  check_tx_signatures blockheight h outpl inpr ar sr /\
+  check_tx_in_signatures blockheight h outpl inpr ar sr /\
   assetid a = k /\
   (check_spend_obligation alpha blockheight h s (assetobl a)
    \/
@@ -322,7 +334,50 @@ match inpl,al,sl with
 | _,_,_ => False
 end.
 
+Fixpoint check_tx_out_signatures (blockheight:nat) (h:hashval) (outpl:list addr_preasset) (sl:list gensignat) : Prop :=
+match outpl,sl with
+| nil,nil => True
+| (_,(_,theorypublication alpha n thy))::outpr,ordinarysignat s::sr =>
+  check_tx_out_signatures blockheight h outpr sr /\
+  check_signat h s alpha
+| (_,(_,signapublication alpha n th si))::outpr,ordinarysignat s::sr =>
+  check_tx_out_signatures blockheight h outpr sr /\
+  check_signat h s alpha
+| (_,(_,docpublication alpha n th d))::outpr,ordinarysignat s::sr =>
+  check_tx_out_signatures blockheight h outpr sr /\
+  check_signat h s alpha
+| _::outpr,_ =>
+  check_tx_out_signatures blockheight h outpr sl
+| _,_ => False
+end.
+
 Definition tx_signatures_valid (blockheight : nat) (al:list asset) (stx:sTx) : Prop :=
-let (tx,sl) := stx in
-check_tx_signatures blockheight (hashtx tx) (tx_outputs tx) (tx_inputs tx) al sl
-.
+match stx with
+| (tx,(sli,slo)) =>
+  check_tx_in_signatures blockheight (hashtx tx) (tx_outputs tx) (tx_inputs tx) al sli
+  /\
+  check_tx_out_signatures blockheight (hashtx tx) (tx_outputs tx) slo
+end.
+
+(*** Transform the theory tree and signature tree based on the specs in the output of the tx ***)
+Fixpoint txout_update_ottree (outpl:list addr_preasset) (tht:option (ttree 160)) : option (ttree 160) :=
+match outpl with
+| nil => tht
+| (alpha,(obl,theorypublication gamma nonce d))::outpr =>
+  txout_update_ottree outpr (Some(ottree_insert tht (hashval_bit160 (hashtheoryspec d)) (theoryspec_theory d)))
+| _::outpr => txout_update_ottree outpr tht
+end.
+
+Definition tx_update_ottree (tx:Tx) (tht:option (ttree 160)) : option (ttree 160) :=
+txout_update_ottree (tx_outputs tx) tht.
+
+Fixpoint txout_update_ostree (outpl:list addr_preasset) (sigt:option (stree 160)) : option (stree 160) :=
+match outpl with
+| nil => sigt
+| (alpha,(obl,signapublication gamma nonce th d))::outpr =>
+  txout_update_ostree outpr (Some(ostree_insert sigt (hashval_bit160 (hashsignaspec d)) th (signaspec_stree_signa sigt th d)))
+| _::outpr => txout_update_ostree outpr sigt
+end.
+
+Definition tx_update_ostree (tx:Tx) (sigt:option (stree 160)) : option (stree 160) :=
+txout_update_ostree (tx_outputs tx) sigt.

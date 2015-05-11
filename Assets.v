@@ -9,7 +9,7 @@
     (preasset) the kind of asset
     The preassets include currency units, bounties (for proving a conjecture),
     owns (ownership of objs/props), rights (for using an obj/prop), intention (as
-    part of a publication protocol) and publication (for formal documents).
+    part of a publication protocol ["commit and reveal"]) and publication (for formal documents).
     The usereq is (al,(m,n)) where al is a list of addresses that can sign to spend,
     m is the number of addresses that must sign, and n is the block height
     at which spending is first allowed.
@@ -20,12 +20,12 @@ Require Export MathData.
 Inductive preasset : Type :=
 | currency : nat -> preasset (*** currency u is u units of currency ***)
 | bounty : nat -> preasset (*** Idea: If alpha holds this, then the bounty can be converted (back) to currency units sent to beta in a transaction in which beta publishes a 'soln' to alpha. This is an example where the required signer is not the holder. ***)
-| owns : bool -> addr -> option nat -> preasset (*** Idea: If beta holds owns alpha n, then alpha controls who can obtain the rights to use the data that hashes to beta. People can create such rights by paying n units to alpha, unless n is None, in which case only the owner can use it. The initial bool is just to distinguish between owning objects (owns false) and owning propositions (owns true). ***)
-| rights : bool -> nat -> addr -> preasset (*** Idea: If alpha has rights n beta, then alpha can use this to use the data that hashes to beta up to n times. Could have another version with an expiration block. ***)
-| intention : addr -> preasset (*** Idea: If alpha has intention beta, then beta and only beta can publish a nonced document which hashes to alpha. (If someone else sees the document they can create a different nonced document, add the corresponding commitment and then try to publish their copy of the document. Presumably this would be too late to have priority over beta.) ***)
-| theorypublication : nat -> theory -> preasset (*** nonce and data ***)
-| signapublication : nat -> option hashval -> signa -> preasset (*** nonce and data ***)
-| docpublication : nat -> option hashval -> doc -> preasset (*** nonce and data ***)
+| owns : bool -> payaddr -> option nat -> preasset (*** Idea: If beta holds owns alpha n, then alpha controls who can obtain the rights to use the data that hashes to beta. People can create such rights by paying n units to alpha, unless n is None, in which case only the owner can use it. The initial bool is just to distinguish between owning objects (owns false) and owning propositions (owns true). ***)
+| rights : bool -> nat -> termaddr -> preasset (*** Idea: If alpha has rights n beta, then alpha can use this to use the data that hashes to beta up to n times. Could have another version with an expiration block. ***)
+| marker : preasset (*** Idea: A marker placed at an address can serve more than one purpose. At a termaddr it is there as a way to check that a certain term is known to have a certain type. If an intention at pubaddress alpha has enough confirmations, then a publication can be published if it hashes to alpha. The author's address is part of what is hashed. ***)
+| theorypublication : payaddr -> nat -> theoryspec -> preasset (*** author, nonce and data ***)
+| signapublication : payaddr -> nat -> option hashval -> signaspec -> preasset (*** author, nonce, theory and data ***)
+| docpublication : payaddr -> nat -> option hashval -> doc -> preasset (*** author, nonce, theory and data ***)
 .
 
 (*** obligation (a,b) : a : address, b : nat
@@ -34,7 +34,7 @@ Inductive preasset : Type :=
  The obligation can also be met via endorsement to another address a' which then signs it.
  None means that the holder signs for it and the block height restriction is effectively 0.
  ***)
-Definition obligation : Type := option (prod addr nat).
+Definition obligation : Type := option (prod payaddr nat).
 
 Definition preasset_value (u:preasset) : option nat :=
   match u with
@@ -56,22 +56,22 @@ Definition hashpreasset (a:preasset) : hashval :=
 match a with
 | currency u => hashpair (hashnat 0) (hashnat u)
 | bounty u => hashpair (hashnat 1) (hashnat u)
-| owns false alpha (Some u) => hashpair (hashnat 2) (hashpair (hashaddr alpha) (hashnat u))
-| owns true alpha (Some u) => hashpair (hashnat 3) (hashpair (hashaddr alpha) (hashnat u))
-| owns false alpha None => hashpair (hashnat 4) (hashaddr alpha)
-| owns true alpha None => hashpair (hashnat 5) (hashaddr alpha)
-| rights false n alpha => hashpair (hashnat 6) (hashpair (hashnat n) (hashaddr alpha))
-| rights true n alpha => hashpair (hashnat 7) (hashpair (hashnat n) (hashaddr alpha))
-| intention alpha => hashpair (hashnat 8) (hashaddr alpha)
-| theorypublication n d => hashpair (hashnat 9) (hashpair (hashnat n) (hashtheory d))
-| signapublication n th d => hashpair (hashnat 10) (hashpair (hashnat n) (hashopair2 th (hashsigna d)))
-| docpublication n th d => hashpair (hashnat 11) (hashpair (hashnat n) (hashopair2 th (hashdoc d)))
+| owns false alpha (Some u) => hashpair (hashnat 2) (hashpair (hashaddr (payaddr_addr alpha)) (hashnat u))
+| owns true alpha (Some u) => hashpair (hashnat 3) (hashpair (hashaddr (payaddr_addr alpha)) (hashnat u))
+| owns false alpha None => hashpair (hashnat 4) (hashaddr (payaddr_addr alpha))
+| owns true alpha None => hashpair (hashnat 5) (hashaddr (payaddr_addr alpha))
+| rights false n alpha => hashpair (hashnat 6) (hashpair (hashnat n) (hashaddr (termaddr_addr alpha)))
+| rights true n alpha => hashpair (hashnat 7) (hashpair (hashnat n) (hashaddr (termaddr_addr alpha)))
+| marker => hashpair (hashnat 8) (hashnat 0)
+| theorypublication alpha n d => hashpair (hashnat 9) (hashpair (hashaddr (payaddr_addr alpha)) (hashpair (hashnat n) (hashtheoryspec d)))
+| signapublication alpha n th d => hashpair (hashnat 10) (hashpair (hashaddr (payaddr_addr alpha)) (hashpair (hashnat n) (hashopair2 th (hashsignaspec d))))
+| docpublication alpha n th d => hashpair (hashnat 11) (hashpair (hashaddr (payaddr_addr alpha)) (hashpair (hashnat n) (hashopair2 th (hashdoc d))))
 end.
 
 Definition hashobligation (obl:obligation) : hashval :=
 match obl with
 | None => hashnat 0
-| Some(a,b) => hashpair (hashaddr a) (hashnat b)
+| Some(a,b) => hashpair (hashaddr (payaddr_addr a)) (hashnat b)
 end.
 
 Definition hashasset (a:asset) : hashval :=
@@ -82,61 +82,71 @@ end.
 
 Lemma hashpreassetinj a b :
 hashpreasset a = hashpreasset b -> a = b.
-destruct a as [u|u|[|] alpha [u|]|[|] k alpha|alpha|m d|m th d|m th d]; destruct b as [v|v|[|] beta [v|]|[|] k' beta|beta|n d'|n th' d'|n th' d'];
+destruct a as [u|u|[|] alpha [u|]|[|] k alpha| |alpha m d|alpha m th d|alpha m th d]; destruct b as [v|v|[|] beta [v|]|[|] k' beta| |beta n d'|beta n th' d'|beta n th' d'];
   try (simpl; intros H1; exfalso; apply hashpairinj in H1; destruct H1 as [H1 _]; apply hashnatinj in H1; omega).
 - simpl. intros H1.
   apply hashpairinj in H1. destruct H1 as [_ H1].
   apply hashnatinj in H1.
   congruence.
-- simpl. intros H1. apply hashpairinj in H1. destruct H1 as [_ H1].
+- simpl. intros H1. apply hashpairinj in H1.
+  destruct H1 as [_ H1].
   apply hashnatinj in H1.
   congruence.
 - simpl. intros H1. apply hashpairinj in H1. destruct H1 as [_ H1].
   apply hashpairinj in H1. destruct H1 as [H2 H3].
   apply hashaddrinj in H2.
+  apply payaddr_addr_inj in H2.
   apply hashnatinj in H3.
   congruence.
 - simpl. intros H1. apply hashpairinj in H1. destruct H1 as [_ H1].
   apply hashaddrinj in H1.
+  apply payaddr_addr_inj in H1.
   congruence.
 - simpl. intros H1. apply hashpairinj in H1. destruct H1 as [_ H1].
   apply hashpairinj in H1. destruct H1 as [H2 H3].
   apply hashaddrinj in H2.
+  apply payaddr_addr_inj in H2.
   apply hashnatinj in H3.
   congruence.
 - simpl. intros H1. apply hashpairinj in H1. destruct H1 as [_ H1].
   apply hashaddrinj in H1.
+  apply payaddr_addr_inj in H1.
   congruence.
 - simpl. intros H1. apply hashpairinj in H1. destruct H1 as [_ H1].
   apply hashpairinj in H1. destruct H1 as [H2 H3].
   apply hashnatinj in H2.
   apply hashaddrinj in H3.
+  apply termaddr_addr_inj in H3.
   congruence.
 - simpl. intros H1. apply hashpairinj in H1. destruct H1 as [_ H1].
   apply hashpairinj in H1. destruct H1 as [H2 H3].
   apply hashnatinj in H2.
   apply hashaddrinj in H3.
+  apply termaddr_addr_inj in H3.
   congruence.
-- simpl. intros H1. apply hashpairinj in H1. destruct H1 as [_ H1].
-  apply hashaddrinj in H1.
-  congruence.
+- congruence.
 - simpl. intros H1. apply hashpairinj in H1. destruct H1 as [_ H1].
   apply hashpairinj in H1. destruct H1 as [H2 H3].
-  apply hashnatinj in H2.
+  apply hashpairinj in H3. destruct H3 as [H4 H5].
+  apply hashaddrinj in H2. apply payaddr_addr_inj in H2.
+  apply hashnatinj in H4. subst alpha. subst m.
   f_equal.
-  + congruence.
-  + revert H3. apply hashtheoryinj.
+  revert H5. apply hashtheoryspecinj.
 - simpl. intros H1. apply hashpairinj in H1. destruct H1 as [_ H1].
   apply hashpairinj in H1. destruct H1 as [H2 H3].
-  apply hashopair2inj in H3. destruct H3 as [H4 H5].
-  apply hashsignainj in H5.
-  apply hashnatinj in H2.
+  apply hashpairinj in H3. destruct H3 as [H4 H5].
+  apply hashopair2inj in H5. destruct H5 as [H6 H7].
+  apply hashaddrinj in H2. apply payaddr_addr_inj in H2.
+  apply hashsignaspecinj in H7.
+  apply hashnatinj in H4.
   congruence.
 - simpl. intros H1. apply hashpairinj in H1. destruct H1 as [_ H1].
   apply hashpairinj in H1. destruct H1 as [H2 H3].
-  apply hashopair2inj in H3. destruct H3 as [H4 H5].
-  apply hashdocinj in H5.
-  apply hashnatinj in H2.
+  apply hashpairinj in H3. destruct H3 as [H4 H5].
+  apply hashopair2inj in H5. destruct H5 as [H6 H7].
+  apply hashaddrinj in H2. apply payaddr_addr_inj in H2.
+  apply hashdocinj in H7.
+  apply hashnatinj in H4.
   congruence.
 Qed.
 
@@ -145,7 +155,9 @@ Lemma hashobligationinj (obl obl':obligation) :
 destruct obl as [[a b]|]; destruct obl' as [[a' b']|]; simpl; intros H1.
 - apply hashpairinj in H1. destruct H1 as [H2 H3].
   apply hashaddrinj in H2. apply hashnatinj in H3.
-  congruence.
+  destruct a as [[|] a]; destruct a' as [[|] a']; try discriminate H2.
+  + unfold payaddr_addr in H2. inversion H2. congruence.
+  + unfold payaddr_addr in H2. inversion H2. congruence.
 - symmetry in H1. apply hashnatpairdiscr in H1. tauto.
 - apply hashnatpairdiscr in H1. tauto.
 - reflexivity.
@@ -249,7 +261,7 @@ induction l as [|[beta [obl u]] l IH].
 Qed.
 
 Definition preasset_eq_dec (a1 a2:preasset) : {a1 = a2} + {a1 <> a2}.
-destruct a1 as [u|u|[|] alpha [u|]|[|] k alpha|alpha|m d|m th d|m th d]; destruct a2 as [v|v|[|] beta [v|]|[|] k' beta|beta|n d'|n th' d'|n th' d']; try (right; discriminate).
+destruct a1 as [u|u|[|] alpha [u|]|[|] k alpha| |alpha m d|alpha m th d|alpha m th d]; destruct a2 as [v|v|[|] beta [v|]|[|] k' beta| |beta n d'|beta n th' d'|beta n th' d']; try (right; discriminate).
 - destruct (eq_nat_dec u v) as [D1|D1].
   + left. congruence.
   + right. intros H1. inversion H1. tauto.
@@ -257,51 +269,56 @@ destruct a1 as [u|u|[|] alpha [u|]|[|] k alpha|alpha|m d|m th d|m th d]; destruc
   + left. congruence.
   + right. intros H1. inversion H1. tauto.
 - destruct (eq_nat_dec u v) as [D1|D1].
-  + destruct (addr_eq_dec alpha beta) as [D2|D2].
+  + destruct (payaddr_eq_dec alpha beta) as [D2|D2].
     * left. congruence.
     * right. intros H1. inversion H1. tauto.
   + right. intros H1. inversion H1. tauto.
-- destruct (addr_eq_dec alpha beta) as [D1|D1].
+- destruct (payaddr_eq_dec alpha beta) as [D1|D1].
   + left. congruence.
   + right. intros H1. inversion H1. tauto.
 - destruct (eq_nat_dec u v) as [D1|D1].
-  + destruct (addr_eq_dec alpha beta) as [D2|D2].
+  + destruct (payaddr_eq_dec alpha beta) as [D2|D2].
     * left. congruence.
     * right. intros H1. inversion H1. tauto.
   + right. intros H1. inversion H1. tauto.
-- destruct (addr_eq_dec alpha beta) as [D1|D1].
+- destruct (payaddr_eq_dec alpha beta) as [D1|D1].
   + left. congruence.
   + right. intros H1. inversion H1. tauto.
 - destruct (eq_nat_dec k k') as [D1|D1].
-  + destruct (addr_eq_dec alpha beta) as [D2|D2].
+  + destruct (termaddr_eq_dec alpha beta) as [D2|D2].
     * left. congruence.
     * right. intros H1. inversion H1. tauto.
   + right. intros H1. inversion H1. tauto.
 - destruct (eq_nat_dec k k') as [D1|D1].
-  + destruct (addr_eq_dec alpha beta) as [D2|D2].
+  + destruct (termaddr_eq_dec alpha beta) as [D2|D2].
     * left. congruence.
     * right. intros H1. inversion H1. tauto.
   + right. intros H1. inversion H1. tauto.
-- destruct (addr_eq_dec alpha beta) as [D1|D1].
-  + left. congruence.
-  + right. intros H1. inversion H1. tauto.
-- destruct (eq_nat_dec m n) as [D1|D1].
-  + destruct (theory_eq_dec d d') as [D2|D2].
-    * left. congruence.
-    * right. intros H1. inversion H1. tauto.
-  + right. intros H1. inversion H1. tauto.
-- destruct (eq_nat_dec m n) as [D1|D1].
-  + destruct (signa_eq_dec d d') as [D2|D2].
-    * { destruct (ohashval_eq_dec th th') as [D3|D3].
+- left. congruence.
+- destruct (payaddr_eq_dec alpha beta) as [D0|D0].
+  + destruct (eq_nat_dec m n) as [D1|D1].
+    * { destruct (theoryspec_eq_dec d d') as [D2|D2].
         - left. congruence.
         - right. intros H1. inversion H1. tauto.
       }
     * right. intros H1. inversion H1. tauto.
   + right. intros H1. inversion H1. tauto.
-- destruct (eq_nat_dec m n) as [D1|D1].
-  + destruct (doc_eq_dec d d') as [D2|D2].
-    * { destruct (ohashval_eq_dec th th') as [D3|D3].
-        - left. congruence.
+- destruct (payaddr_eq_dec alpha beta) as [D0|D0].
+  + destruct (eq_nat_dec m n) as [D1|D1].
+    * { destruct (signaspec_eq_dec d d') as [D2|D2].
+        - destruct (ohashval_eq_dec th th') as [D3|D3].
+          + left. congruence.
+          + right. intros H1. inversion H1. tauto.
+        - right. intros H1. inversion H1. tauto.
+      }
+    * right. intros H1. inversion H1. tauto.
+  + right. intros H1. inversion H1. tauto.
+- destruct (payaddr_eq_dec alpha beta) as [D0|D0].
+  + destruct (eq_nat_dec m n) as [D1|D1].
+    * { destruct (doc_eq_dec d d') as [D2|D2].
+        - destruct (ohashval_eq_dec th th') as [D3|D3].
+          + left. congruence.
+          + right. intros H1. inversion H1. tauto.
         - right. intros H1. inversion H1. tauto.
       }
     * right. intros H1. inversion H1. tauto.
@@ -310,7 +327,7 @@ Defined.
 
 Definition obligation_eq_dec (obl1 obl2 : obligation) : { obl1 = obl2 } + { obl1 <> obl2 }.
 destruct obl1 as [[a1 b1]|]; destruct obl2 as [[a2 b2]|]; try (right; congruence).
-- destruct (addr_eq_dec a1 a2) as [D1|D1]; try (right; congruence).
+- destruct (payaddr_eq_dec a1 a2) as [D1|D1]; try (right; congruence).
   destruct (eq_nat_dec b1 b2) as [D2|D2]; try (right; congruence).
   left; congruence.
 - left; reflexivity.
@@ -766,21 +783,218 @@ revert i. induction outpl as [|[k [obl v]] outpr IH]; intros i.
       }
 Qed.
 
-Fixpoint output_uses (b:bool) (outpl:list addr_preasset) : list addr :=
+Fixpoint output_uses (b:bool) (outpl:list addr_preasset) : list termaddr :=
   match outpl with
-    | (_,(_,signapublication _ th d))::outpr =>
+    | (_,(_,signapublication _ _ th d))::outpr =>
       if b then
-        (map hashval_term_addr (signa_uses_props th d)) ++ output_uses b outpr
+        (map hashval_termaddr (signaspec_uses_props th d)) ++ output_uses b outpr
       else
-        (map hashval_term_addr (signa_uses_objs d)) ++ output_uses b outpr
-    | (_,(_,docpublication _ th d))::outpr =>
+        (map hashval_termaddr (signaspec_uses_objs d)) ++ output_uses b outpr
+    | (_,(_,docpublication _ _ th d))::outpr =>
       if b then
-        (map hashval_term_addr (doc_uses_props th d)) ++ output_uses b outpr
+        (map hashval_termaddr (doc_uses_props th d)) ++ output_uses b outpr
       else
-        (map hashval_term_addr (doc_uses_objs d)) ++ output_uses b outpr
+        (map hashval_termaddr (doc_uses_objs d)) ++ output_uses b outpr
     | _::outpr => output_uses b outpr
     | nil => nil
   end.
+
+Fixpoint output_creates (b:bool) (outpl:list addr_preasset) : list (prod hashval hashval) :=
+  match outpl with
+    | (_,(_,docpublication _ _ th d))::outpr =>
+      if b then
+        (doc_creates_props th d) ++ output_creates b outpr
+      else
+        (doc_creates_objs th d) ++ output_creates b outpr
+    | _::outpr => output_creates b outpr
+    | nil => nil
+  end.
+
+Fixpoint output_markers (outpl:list addr_preasset) : list hashval :=
+  match outpl with
+    | (_,(_,signapublication _ _ th d))::outpr =>
+      signaspec_stp_markers d ++ signaspec_known_markers th d ++ output_markers outpr
+    | (_,(_,docpublication _ _ th d))::outpr =>
+      doc_stp_markers d ++ doc_known_markers th d ++ output_markers outpr
+    | _::outpr => output_markers outpr
+    | nil => nil
+  end.
+
+Lemma signaspec_stp_markers_output_markers h alpha obl gamma nonce th s outpl :
+  In (alpha,(obl,signapublication gamma nonce th s)) outpl
+  -> In h (signaspec_stp_markers s)
+  -> In h (output_markers outpl).
+induction outpl as [|[beta [obl' [u|u|[|] gamma' [u|]|[|] k gamma'| |gamma' m d|gamma' m th' d|gamma' m th' d]]] outpr IH].
+- simpl. tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1. intros H. apply in_or_app. tauto.
+  + intros H. apply in_or_app. right. apply in_or_app. tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + intros H. apply in_or_app. right. apply in_or_app. tauto.
+Qed.
+
+Lemma signaspec_known_markers_output_markers h alpha obl gamma nonce th s outpl :
+  In (alpha,(obl,signapublication gamma nonce th s)) outpl
+  -> In h (signaspec_known_markers th s)
+  -> In h (output_markers outpl).
+induction outpl as [|[beta [obl' [u|u|[|] gamma' [u|]|[|] k gamma'| |gamma' m d|gamma' m th' d|gamma' m th' d]]] outpr IH].
+- simpl. tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1. intros H. apply in_or_app. right. apply in_or_app. tauto.
+  + intros H. apply in_or_app. right. apply in_or_app. tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + intros H. apply in_or_app. right. apply in_or_app. tauto.
+Qed.
+
+Lemma doc_stp_markers_output_markers h alpha obl gamma nonce th s outpl :
+  In (alpha,(obl,docpublication gamma nonce th s)) outpl
+  -> In h (doc_stp_markers s)
+  -> In h (output_markers outpl).
+induction outpl as [|[beta [obl' [u|u|[|] gamma' [u|]|[|] k gamma'| |gamma' m d|gamma' m th' d|gamma' m th' d]]] outpr IH].
+- simpl. tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + intros H. apply in_or_app. right. apply in_or_app. tauto.
+- simpl. intros [H1|H1].
+  + inversion H1. intros H. apply in_or_app. tauto.
+  + intros H. apply in_or_app. right. apply in_or_app. tauto.
+Qed.
+
+Lemma doc_known_markers_output_markers h alpha obl gamma nonce th s outpl :
+  In (alpha,(obl,docpublication gamma nonce th s)) outpl
+  -> In h (doc_known_markers th s)
+  -> In h (output_markers outpl).
+induction outpl as [|[beta [obl' [u|u|[|] gamma' [u|]|[|] k gamma'| |gamma' m d|gamma' m th' d|gamma' m th' d]]] outpr IH].
+- simpl. tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + tauto.
+- simpl. intros [H1|H1].
+  + inversion H1.
+  + intros H. apply in_or_app. right. apply in_or_app. tauto.
+- simpl. intros [H1|H1].
+  + inversion H1. intros H. apply in_or_app. right. apply in_or_app. tauto.
+  + intros H. apply in_or_app. right. apply in_or_app. tauto.
+Qed.
 
 Lemma output_uses_nil b : output_uses b nil = nil.
 destruct b; reflexivity.
@@ -788,7 +1002,7 @@ Qed.
 
 Lemma output_uses_app b outpl1 outpl2 :
   output_uses b (outpl1 ++ outpl2) = output_uses b outpl1 ++ output_uses b outpl2.
-induction outpl1 as [|[beta [obl [u|u|[|] gamma [u|]|[|] k gamma|gamma|m d|m th d|m th d]]] outpl1 IH]; try (simpl; tauto).
+induction outpl1 as [|[beta [obl [u|u|[|] gamma [u|]|[|] k gamma| |gamma m d|gamma m th d|gamma m th d]]] outpl1 IH]; try (simpl; tauto).
 - simpl. destruct b; rewrite IH; apply app_assoc.
 - simpl. destruct b; rewrite IH; apply app_assoc.
 Qed.
@@ -802,10 +1016,29 @@ rewrite output_uses_app. split.
 - apply in_or_app.
 Qed.
 
-Fixpoint rights_out_objs (outpl:list addr_preasset) (alpha:addr) : nat :=
+Lemma output_creates_nil b : output_creates b nil = nil.
+destruct b; reflexivity.
+Qed.
+
+Lemma output_creates_app b outpl1 outpl2 :
+  output_creates b (outpl1 ++ outpl2) = output_creates b outpl1 ++ output_creates b outpl2.
+induction outpl1 as [|[beta [obl [u|u|[|] gamma [u|]|[|] k gamma| |gamma m d|gamma m th d|gamma m th d]]] outpl1 IH]; try (simpl; tauto).
+- simpl. destruct b; rewrite IH; apply app_assoc.
+Qed.
+
+Lemma output_creates_app_or alpha b l r :
+  In alpha (output_creates b (l ++ r))
+  <->
+  (In alpha (output_creates b l) \/ In alpha (output_creates b r)).
+rewrite output_creates_app. split.
+- apply in_app_or.
+- apply in_or_app.
+Qed.
+
+Fixpoint rights_out_objs (outpl:list addr_preasset) (alpha:termaddr) : nat :=
   match outpl with
     | (_,(_,rights false n beta))::outpr =>
-      if addr_eq_dec alpha beta then
+      if termaddr_eq_dec alpha beta then
         n + rights_out_objs outpr alpha
       else
         rights_out_objs outpr alpha
@@ -813,10 +1046,10 @@ Fixpoint rights_out_objs (outpl:list addr_preasset) (alpha:addr) : nat :=
     | nil => 0
   end.
 
-Fixpoint rights_out_props (outpl:list addr_preasset) (alpha:addr) : nat :=
+Fixpoint rights_out_props (outpl:list addr_preasset) (alpha:termaddr) : nat :=
   match outpl with
     | (_,(_,rights true n beta))::outpr =>
-      if addr_eq_dec alpha beta then
+      if termaddr_eq_dec alpha beta then
         n + rights_out_props outpr alpha
       else
         rights_out_props outpr alpha
@@ -824,7 +1057,7 @@ Fixpoint rights_out_props (outpl:list addr_preasset) (alpha:addr) : nat :=
     | nil => 0
   end.
 
-Definition rights_out (b:bool) (outpl:list addr_preasset) (alpha:addr) : nat :=
+Definition rights_out (b:bool) (outpl:list addr_preasset) (alpha:termaddr) : nat :=
 if b then rights_out_props outpl alpha else rights_out_objs outpl alpha.
 
 Lemma rights_out_nil b alpha :
@@ -834,24 +1067,24 @@ Qed.
 
 Lemma rights_out_app b outpl1 outpl2 alpha :
   rights_out b (outpl1 ++ outpl2) alpha = rights_out b outpl1 alpha + rights_out b outpl2 alpha.
-induction outpl1 as [|[beta [obl [u|u|[|] gamma [u|]|[|] k gamma|gamma|m d|m th d|m th d]]] outpl1 IH]; try (simpl; tauto).
+induction outpl1 as [|[beta [obl [u|u|[|] gamma [u|]|[|] k gamma| |gamma m d|gamma m th d|gamma m th d]]] outpl1 IH]; try (simpl; tauto).
 - destruct b; reflexivity.
 - destruct b; simpl.
-  + destruct (addr_eq_dec alpha gamma) as [D|D].
+  + destruct (termaddr_eq_dec alpha gamma) as [D|D].
     * simpl in IH. rewrite IH. apply plus_assoc.
     * exact IH.
   + exact IH.
 - destruct b; simpl.
   + exact IH.
-  + destruct (addr_eq_dec alpha gamma) as [D|D].
+  + destruct (termaddr_eq_dec alpha gamma) as [D|D].
     * simpl in IH. rewrite IH. apply plus_assoc.
     * exact IH.
 Qed.
 
-Fixpoint count_rights_used (bl:list addr) (alpha:addr) : nat :=
+Fixpoint count_rights_used (bl:list termaddr) (alpha:termaddr) : nat :=
   match bl with
     | beta::br =>
-      if addr_eq_dec beta alpha then
+      if termaddr_eq_dec beta alpha then
         S (count_rights_used br alpha)
       else
         count_rights_used br alpha
@@ -862,7 +1095,7 @@ Lemma count_rights_used_none bl alpha :
   ~In alpha bl -> count_rights_used bl alpha = 0.
 induction bl as [|beta bl1 IH].
 - simpl. tauto.
-- intros H1. simpl. destruct (addr_eq_dec beta alpha) as [D|D].
+- intros H1. simpl. destruct (termaddr_eq_dec beta alpha) as [D|D].
   + exfalso. apply H1. subst beta. now left.
   + apply IH. intros H2. apply H1. now right.
 Qed.
@@ -871,12 +1104,12 @@ Lemma count_rights_used_app bl1 bl2 alpha :
   count_rights_used (bl1 ++ bl2) alpha = count_rights_used bl1 alpha + count_rights_used bl2 alpha.
 induction bl1 as [|beta bl1 IH].
 - simpl. reflexivity.
-- simpl. destruct (addr_eq_dec beta alpha) as [D|D].
+- simpl. destruct (termaddr_eq_dec beta alpha) as [D|D].
   + rewrite IH. reflexivity.
   + exact IH.
 Qed.
 
-Definition rights_mentioned (alpha:addr) (b:bool) (outpl:list addr_preasset) : Prop :=
+Definition rights_mentioned (alpha:termaddr) (b:bool) (outpl:list addr_preasset) : Prop :=
   In alpha (output_uses b outpl) \/ (exists beta obl n, In (beta,(obl,rights b n alpha)) outpl).
 
 Definition rights_mentioned_dec alpha b outpl :
@@ -891,7 +1124,7 @@ induction outpl as [|[beta [obl u]] outpr IH].
       change (In alpha (output_uses b (((beta,(obl,u))::nil) ++ outpr))).
       apply output_uses_app_or. now right.
     * right. exists beta'. exists obl'. exists n'. now right.
-  + destruct u as [u|u|c gamma [u|]|c k gamma|gamma|m d|m th d|m th d].
+  + destruct u as [u|u|c gamma [u|]|c k gamma| |gamma m d|gamma m th d|gamma m th d].
     * { right. intros [H2|[beta' [obl' [n' [H2|H2]]]]].
         - apply H1. now left.
         - discriminate H2.
@@ -913,7 +1146,7 @@ induction outpl as [|[beta [obl u]] outpr IH].
         - apply H1. right. exists beta'. exists obl'. exists n'. exact H2.
       }
     * { assert (L1 : { b = c /\ alpha = gamma } + { ~ (b = c /\ alpha = gamma) }).
-        { destruct (addr_eq_dec alpha gamma) as [D1|D1].
+        { destruct (termaddr_eq_dec alpha gamma) as [D1|D1].
           - destruct b; destruct c.
             + left. tauto.
             + right. intros [H2 _]. discriminate H2.
@@ -939,7 +1172,7 @@ induction outpl as [|[beta [obl u]] outpr IH].
         - apply H1. right. exists beta'. exists obl'. exists n'. exact H2.
       }
     * { destruct b.
-        - destruct (in_dec addr_eq_dec alpha (map hashval_term_addr (signa_uses_props th d))) as [D1|D1].
+        - destruct (in_dec termaddr_eq_dec alpha (map hashval_termaddr (signaspec_uses_props th d))) as [D1|D1].
           + left. left. simpl. apply in_or_app. left. exact D1.
           + right. intros [H2|[beta' [obl' [n' [H2|H2]]]]].
             * { apply H1. simpl in H2. apply in_app_or in H2.
@@ -949,7 +1182,7 @@ induction outpl as [|[beta [obl u]] outpr IH].
               }
             * discriminate H2.
             * apply H1. right. exists beta'. exists obl'. exists n'. exact H2.
-        - destruct (in_dec addr_eq_dec alpha (map hashval_term_addr (signa_uses_objs d))) as [D1|D1].
+        - destruct (in_dec termaddr_eq_dec alpha (map hashval_termaddr (signaspec_uses_objs d))) as [D1|D1].
           + left. left. simpl. apply in_or_app. left. exact D1.
           + right. intros [H2|[beta' [obl' [n' [H2|H2]]]]].
             * { apply H1. simpl in H2. apply in_app_or in H2.
@@ -961,7 +1194,7 @@ induction outpl as [|[beta [obl u]] outpr IH].
             * apply H1. right. exists beta'. exists obl'. exists n'. exact H2.
       }
     * { destruct b.
-        - destruct (in_dec addr_eq_dec alpha (map hashval_term_addr (doc_uses_props th d))) as [D1|D1].
+        - destruct (in_dec termaddr_eq_dec alpha (map hashval_termaddr (doc_uses_props th d))) as [D1|D1].
           + left. left. simpl. apply in_or_app. left. exact D1.
           + right. intros [H2|[beta' [obl' [n' [H2|H2]]]]].
             * { apply H1. simpl in H2. apply in_app_or in H2.
@@ -971,7 +1204,7 @@ induction outpl as [|[beta [obl u]] outpr IH].
               }
             * discriminate H2.
             * apply H1. right. exists beta'. exists obl'. exists n'. exact H2.
-        - destruct (in_dec addr_eq_dec alpha (map hashval_term_addr (doc_uses_objs d))) as [D1|D1].
+        - destruct (in_dec termaddr_eq_dec alpha (map hashval_termaddr (doc_uses_objs d))) as [D1|D1].
           + left. left. simpl. apply in_or_app. left. exact D1.
           + right. intros [H2|[beta' [obl' [n' [H2|H2]]]]].
             * { apply H1. simpl in H2. apply in_app_or in H2.
@@ -1009,7 +1242,7 @@ induction outpl as [|[beta [obl u]] outpr IH].
   + simpl. apply IH. intros H2. apply H1. now apply rights_mentioned_cons.
   + simpl. apply IH. intros H2. apply H1. now apply rights_mentioned_cons.
   + simpl. destruct c.
-    * { destruct (addr_eq_dec alpha gamma) as [D|D].
+    * { destruct (termaddr_eq_dec alpha gamma) as [D|D].
         - exfalso. apply H1. right. exists beta. exists obl. exists k.
           subst gamma. now left.
         - apply IH. intros H2. apply H1. now apply rights_mentioned_cons.
@@ -1025,7 +1258,7 @@ induction outpl as [|[beta [obl u]] outpr IH].
   + simpl. apply IH. intros H2. apply H1. now apply rights_mentioned_cons.
   + simpl. destruct c.
     * apply IH. intros H2. apply H1. now apply rights_mentioned_cons.
-    * { destruct (addr_eq_dec alpha gamma) as [D|D].
+    * { destruct (termaddr_eq_dec alpha gamma) as [D|D].
         - exfalso. apply H1. right. exists beta. exists obl. exists k.
           subst gamma. now left.
         - apply IH. intros H2. apply H1. now apply rights_mentioned_cons.
@@ -1041,7 +1274,7 @@ Lemma rights_unmentioned_no_rights_used alpha b outpl :
   count_rights_used (output_uses b outpl) alpha = 0.
 induction outpl as [|[beta [obl u]] outpr IH].
 - intros _. destruct b; reflexivity.
-- intros H1. destruct b; destruct u as [u|u|c gamma [u|]|c k gamma|gamma|m d|m th d|m th d].
+- intros H1. destruct b; destruct u as [u|u|c gamma [u|]|c k gamma| |gamma m d|gamma m th d|gamma m th d].
   + simpl. apply IH. intros H2. apply H1. now apply rights_mentioned_cons.
   + simpl. apply IH. intros H2. apply H1. now apply rights_mentioned_cons.
   + simpl. apply IH. intros H2. apply H1. now apply rights_mentioned_cons.
@@ -1051,9 +1284,9 @@ induction outpl as [|[beta [obl u]] outpr IH].
   + simpl. apply IH. intros H2. apply H1. now apply rights_mentioned_cons.
   + simpl. rewrite count_rights_used_app.
     rewrite IH.
-    * { destruct (in_dec addr_eq_dec alpha (map hashval_term_addr (signa_uses_props th d))) as [D1|D1].
+    * { destruct (in_dec termaddr_eq_dec alpha (map hashval_termaddr (signaspec_uses_props th d))) as [D1|D1].
         - exfalso. apply H1. left.
-          change (In alpha (output_uses true (((beta, (obl, signapublication m th d)) :: nil) ++ outpr))).
+          change (In alpha (output_uses true (((beta, (obl, signapublication gamma m th d)) :: nil) ++ outpr))).
           apply output_uses_app_or.
           left. simpl. rewrite app_nil_r. exact D1.
         - apply count_rights_used_none in D1. rewrite D1. reflexivity.
@@ -1061,9 +1294,9 @@ induction outpl as [|[beta [obl u]] outpr IH].
     * intros H2. apply H1. now apply rights_mentioned_cons.
   + simpl. rewrite count_rights_used_app.
     rewrite IH.
-    * { destruct (in_dec addr_eq_dec alpha (map hashval_term_addr (doc_uses_props th d))) as [D1|D1].
+    * { destruct (in_dec termaddr_eq_dec alpha (map hashval_termaddr (doc_uses_props th d))) as [D1|D1].
         - exfalso. apply H1. left.
-          change (In alpha (output_uses true (((beta, (obl, docpublication m th d)) :: nil) ++ outpr))).
+          change (In alpha (output_uses true (((beta, (obl, docpublication gamma m th d)) :: nil) ++ outpr))).
           apply output_uses_app_or.
           left. simpl. rewrite app_nil_r. exact D1.
         - apply count_rights_used_none in D1. rewrite D1. reflexivity.
@@ -1078,9 +1311,9 @@ induction outpl as [|[beta [obl u]] outpr IH].
   + simpl. apply IH. intros H2. apply H1. now apply rights_mentioned_cons.
   + simpl. rewrite count_rights_used_app.
     rewrite IH.
-    * { destruct (in_dec addr_eq_dec alpha (map hashval_term_addr (signa_uses_objs d))) as [D1|D1].
+    * { destruct (in_dec termaddr_eq_dec alpha (map hashval_termaddr (signaspec_uses_objs d))) as [D1|D1].
         - exfalso. apply H1. left.
-          change (In alpha (output_uses false (((beta, (obl, signapublication m th d)) :: nil) ++ outpr))).
+          change (In alpha (output_uses false (((beta, (obl, signapublication gamma m th d)) :: nil) ++ outpr))).
           apply output_uses_app_or.
           left. simpl. rewrite app_nil_r. exact D1.
         - apply count_rights_used_none in D1. rewrite D1. reflexivity.
@@ -1088,9 +1321,9 @@ induction outpl as [|[beta [obl u]] outpr IH].
     * intros H2. apply H1. now apply rights_mentioned_cons.
   + simpl. rewrite count_rights_used_app.
     rewrite IH.
-    * { destruct (in_dec addr_eq_dec alpha (map hashval_term_addr (doc_uses_objs d))) as [D1|D1].
+    * { destruct (in_dec termaddr_eq_dec alpha (map hashval_termaddr (doc_uses_objs d))) as [D1|D1].
         - exfalso. apply H1. left.
-          change (In alpha (output_uses false (((beta, (obl, docpublication m th d)) :: nil) ++ outpr))).
+          change (In alpha (output_uses false (((beta, (obl, docpublication gamma m th d)) :: nil) ++ outpr))).
           apply output_uses_app_or.
           left. simpl. rewrite app_nil_r. exact D1.
         - apply count_rights_used_none in D1. rewrite D1. reflexivity.
@@ -1112,10 +1345,34 @@ end.
 
 Lemma units_sent_to_addr_app beta outpl1 outpl2 :
   units_sent_to_addr beta (outpl1 ++ outpl2) = units_sent_to_addr beta outpl1 + units_sent_to_addr beta outpl2.
-induction outpl1 as [|[alpha [[[a [|n]]|] [u|u|[|] gamma [u|]|[|] k gamma|gamma|m' d|m' th d|m' th d]]] outpl1 IH]; try exact IH.
+induction outpl1 as [|[alpha [[[a [|n]]|] [u|u|[|] gamma [u|]|[|] k gamma| |gamma m' d|gamma m' th d|gamma m' th d]]] outpl1 IH]; try exact IH.
 - reflexivity.
 - simpl. destruct (addr_eq_dec alpha beta) as [D|D].
   + rewrite IH. apply plus_assoc.
   + exact IH.
 Qed.
 
+(***
+ The next two are functions giving the burncost.
+ Creating theories and signatures should be done sparingly since they must be kept on every node to check future documents.
+ The real functions will give the number of cants based on the number of bytes required to serialize.
+ The current idea is that it will be such that 21 million fraenks must be burned to create 1GB of theories and signatures, and so there will be a hard upper bound of 1GB of theories and signatures.
+***)
+Definition theoryspec_burncost (s:theoryspec) : nat := length (ser_theoryspec s).
+
+Definition signaspec_burncost (s:signaspec) : nat := length (ser_signaspec s).
+
+Fixpoint out_burncost (outpl:list addr_preasset) : nat :=
+match outpl with
+| (alpha,(obl,theorypublication _ _ s))::outpr => theoryspec_burncost s + out_burncost outpr
+| (alpha,(obl,signapublication _ _ _ s))::outpr => signaspec_burncost s + out_burncost outpr
+| (alpha,_)::outpr => out_burncost outpr
+| nil => 0
+end.
+
+Lemma out_burncost_app (l r:list addr_preasset) :
+  out_burncost (l ++ r) = out_burncost l + out_burncost r.
+induction l as [|[beta [obl u]] l IH].
+- simpl. reflexivity.
+- simpl. destruct u as [u|u|[|] alpha [u|]|[|] k alpha|alpha|m d|m th d|m th d]; simpl; omega.
+Qed.

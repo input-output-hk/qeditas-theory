@@ -280,14 +280,26 @@ Definition mtree_can_support_tx (tx:Tx) (T : mtree 162) : Prop :=
 /\
 (forall alpha u, In (alpha,u) (tx_outputs tx) -> mtree_supports_addr T alpha)
 /\
-(forall alpha obl b n beta, In (alpha,(obl,rights b n beta)) (tx_outputs tx) -> mtree_full_approx_addr T beta)
+(forall alpha obl b n beta, In (alpha,(obl,rights b n beta)) (tx_outputs tx) -> mtree_full_approx_addr T (termaddr_addr beta))
 /\
-(forall alpha b, In alpha (output_uses b (tx_outputs tx)) -> mtree_full_approx_addr T alpha)
+(forall alpha b, In alpha (output_uses b (tx_outputs tx)) -> mtree_full_approx_addr T (termaddr_addr alpha))
 /\
-(forall alpha obl b beta r, In (alpha,(obl,owns b beta r)) (tx_outputs tx) -> mtree_full_approx_addr T alpha)
+(forall k1 k2 b, In (k1,k2) (output_creates b (tx_outputs tx)) -> mtree_full_approx_addr T (hashval_term_addr k1))
+/\
+(forall alpha obl b beta r, In (termaddr_addr alpha,(obl,owns b beta r)) (tx_outputs tx) -> mtree_full_approx_addr T (termaddr_addr alpha))
+/\
+(forall obl gamma nonce th d alpha h,
+   In (alpha,(obl,signapublication gamma nonce th d)) (tx_outputs tx) ->
+   In h (signaspec_stp_markers d) \/ In h (signaspec_known_markers th d) ->
+   exists k bday obl', mtree_supports_asset (k,(bday,(obl',marker))) T (hashval_term_addr h))
+/\
+(forall obl gamma nonce th d alpha h,
+   In (alpha,(obl,docpublication gamma nonce th d)) (tx_outputs tx) ->
+   In h (doc_stp_markers d) \/ In h (doc_known_markers th d) ->
+   exists k bday obl', mtree_supports_asset (k,(bday,(obl',marker))) T (hashval_term_addr h))
 .
 
-Inductive mtree_rights_consumed (b:bool) (alpha:addr) (T:mtree 162) : list addr_assetid -> nat -> Prop :=
+Inductive mtree_rights_consumed (b:bool) (alpha:termaddr) (T:mtree 162) : list addr_assetid -> nat -> Prop :=
 | mtree_rights_consumed_nil : mtree_rights_consumed b alpha T nil 0
 | mtree_rights_consumed_cons beta h inpr r1 bday obl r2:
     mtree_rights_consumed b alpha T inpr r1 ->
@@ -300,33 +312,43 @@ Inductive mtree_rights_consumed (b:bool) (alpha:addr) (T:mtree 162) : list addr_
     mtree_rights_consumed b alpha T ((beta,h)::inpr) r1
 .
 
-Definition mtree_rights_balanced (T:mtree 162) (alpha:addr) (b:bool) (inpl:list addr_assetid) (outpl:list addr_preasset) : Prop :=
+Definition mtree_rights_balanced (T:mtree 162) (alpha:termaddr) (b:bool) (inpl:list addr_assetid) (outpl:list addr_preasset) : Prop :=
    (forall (rtot1 rtot2 : nat) (h : hashval) (bday : nat) (obl : obligation) 
-      (beta : addr) (u : nat),
+      (beta : payaddr) (u : nat),
     count_rights_used (output_uses b outpl) alpha = rtot1 ->
-    mtree_supports_asset (h, (bday,(obl, owns b beta (Some u)))) T alpha ->
+    mtree_supports_asset (h, (bday,(obl, owns b beta (Some u)))) T (termaddr_addr alpha) ->
     rights_out b outpl alpha = rtot2 ->
     exists rtot3 rtot4 : nat,
       mtree_rights_consumed b alpha T inpl rtot3 /\
-      rtot4 * u <= units_sent_to_addr beta outpl /\
+      rtot4 * u <= units_sent_to_addr (payaddr_addr beta) outpl /\
       rtot1 + rtot2 = rtot3 + rtot4).
 
-Definition mtree_supports_tx blkheight (tx:Tx) (T : mtree 162) fee rew : Prop :=
+(*** A marker at the term address for #(#_{th}trm,#a) means trm has type a in theory with hash th. ***)
+Definition mtree_lookup_stp (T:mtree 162) (h:hashval) (a:stp) : Prop :=
+  exists k bday obl,
+    mtree_supports_asset (k,(bday,(obl,marker))) T (hashval_term_addr (hashpair h (hashstp a))).
+
+(*** A marker at the term address for #_{th}trm means trm has been proven in theory with hash th. ***)
+Definition mtree_lookup_known (T:mtree 162) (h:hashval) : Prop :=
+  exists k bday obl,
+    mtree_supports_asset (k,(bday,(obl,marker))) T (hashval_term_addr h).
+
+Definition mtree_supports_tx (tht:option (ttree 160)) (sigt:option (stree 160)) blkheight (tx:Tx) (T : mtree 162) fee rew : Prop :=
 (forall alpha u, In (alpha,u) (tx_outputs tx) -> mtree_supports_addr T alpha)
 /\
 (exists utot:nat,
 mtree_asset_value_in T (tx_inputs tx) utot (*** this condition also ensures all assets are supported ***)
 /\
-asset_value_out (tx_outputs tx) + fee = utot + rew)
+asset_value_out (tx_outputs tx) + fee + out_burncost (tx_outputs tx) = utot + rew)
 /\
 (*** if rights are being output and/or used, then they must be transfered or purchased from the owner (who creates them) ***)
 ((forall alpha b,
     (*** these are the rights being used up to publish documents that use alpha in this transaction ***)
     rights_mentioned alpha b (tx_outputs tx) ->
-    (mtree_full_approx_addr T alpha) (*** need all assets to be visible here ***)
+    (mtree_full_approx_addr T (termaddr_addr alpha)) (*** need all assets to be visible here ***)
     /\
     (*** it's not owned by someone blocking its use and... ***)
-    ((~exists h' bday' obl' beta', mtree_supports_asset (h',(bday',(obl',owns b beta' None))) T alpha)
+    ((~exists h' bday' obl' beta', mtree_supports_asset (h',(bday',(obl',owns b beta' None))) T (termaddr_addr alpha))
      /\
      mtree_rights_balanced T alpha b (tx_inputs tx) (tx_outputs tx)))
  /\
@@ -336,37 +358,77 @@ asset_value_out (tx_outputs tx) + fee = utot + rew)
     mtree_supports_asset (h,(bday,(obl,rights b n alpha))) T beta ->
     rights_mentioned alpha b (tx_outputs tx)))
 /\
-(*** publications were declared in advance by a currently usable intention ***)
-(forall obl nonce th d alpha,
-   In (alpha,(obl,docpublication nonce th d)) (tx_outputs tx) ->
-   exists beta h bday obl,
-     beta = hashval_intention_addr (hashpair (hashnat nonce) (hashopair2 th (hashdoc d)))
-     /\
-     In (beta,h) (tx_inputs tx)
-     /\
-     bday + intention_minage <= blkheight
-     /\
-     mtree_supports_asset (h,(bday,(obl,intention alpha))) T beta)
+(*** publications were declared in advance by a currently usable intention and are correct ***)
+((forall obl gamma nonce d alpha,
+    In (alpha,(obl,theorypublication gamma nonce d)) (tx_outputs tx) ->
+    check_theoryspec_p d
+    /\
+    exists beta h bday obl,
+      beta = hashval_publication_addr (hashpair (hashaddr (payaddr_addr gamma)) (hashpair (hashnat nonce) (hashtheoryspec d)))
+      /\
+      In (beta,h) (tx_inputs tx)
+      /\
+      bday + intention_minage <= blkheight
+      /\
+      mtree_supports_asset (h,(bday,(obl,marker))) T beta)
+ /\
+ (forall obl gamma nonce th d alpha,
+    In (alpha,(obl,signapublication gamma nonce th d)) (tx_outputs tx) ->
+    check_signaspec_p (mtree_lookup_stp T) (mtree_lookup_known T) tht sigt th d
+    /\
+    exists beta h bday obl,
+      beta = hashval_publication_addr (hashpair (hashaddr (payaddr_addr gamma)) (hashpair (hashnat nonce) (hashopair2 th (hashsignaspec d))))
+      /\
+      In (beta,h) (tx_inputs tx)
+      /\
+      bday + intention_minage <= blkheight
+      /\
+      mtree_supports_asset (h,(bday,(obl,marker))) T beta)
+ /\
+ (forall obl gamma nonce th d alpha,
+    In (alpha,(obl,docpublication gamma nonce th d)) (tx_outputs tx) ->
+    check_doc_p (mtree_lookup_stp T) (mtree_lookup_known T) tht sigt th d
+    /\
+    exists beta h bday obl,
+      beta = hashval_publication_addr (hashpair (hashaddr (payaddr_addr gamma)) (hashpair (hashnat nonce) (hashopair2 th (hashdoc d))))
+      /\
+      In (beta,h) (tx_inputs tx)
+      /\
+      bday + intention_minage <= blkheight
+      /\
+      mtree_supports_asset (h,(bday,(obl,marker))) T beta))
 /\
 (*** newly claimed ownership must be new and must be supported by a document in the tx ***)
 (forall alpha b obl beta r,
-    In (alpha,(obl,owns b beta r)) (tx_outputs tx) ->
-    mtree_full_approx_addr T alpha (*** need to view the whole asset list to ensure no current owner of obj ***)
+    In (termaddr_addr alpha,(obl,owns b beta r)) (tx_outputs tx) ->
+    mtree_full_approx_addr T (termaddr_addr alpha) (*** need to view the whole asset list to ensure no current owner of obj ***)
     /\
-    ((exists h beta' bday' obl' r', mtree_supports_asset (h,(bday',(obl',owns b beta' r'))) T alpha
-                              /\ In (alpha,h) (tx_inputs tx))
+    ((exists h beta' bday' obl' r', mtree_supports_asset (h,(bday',(obl',owns b beta' r'))) T (termaddr_addr alpha)
+                              /\ In (termaddr_addr alpha,h) (tx_inputs tx))
      \/
-     ((~exists h beta' bday' obl' r', mtree_supports_asset (h,(bday',(obl',owns b beta' r'))) T alpha)
+     ((~exists h beta' bday' obl' r', mtree_supports_asset (h,(bday',(obl',owns b beta' r'))) T (termaddr_addr alpha))
       /\
-      In alpha (output_uses b (tx_outputs tx)))))
+      exists k1 k2,
+        In (k1,k2) (output_creates b (tx_outputs tx))
+        /\
+        alpha = hashval_termaddr k1)))
 /\
 (*** new objects and props must be given ownership by the tx publishing the document ***)
-(forall alpha b,
-   In alpha (output_uses b (tx_outputs tx)) ->
-   mtree_full_approx_addr T alpha (*** need to view the whole asset list to ensure no current owner of prop ***)
+(forall k1 k2 b,
+   In (k1,k2) (output_creates b (tx_outputs tx)) ->
+   mtree_full_approx_addr T (hashval_term_addr k1) (*** need to view the whole asset list to ensure no current owner of prop ***)
    /\
-   (~(exists h' beta' bday' obl' r', mtree_supports_asset (h',(bday',(obl',owns true beta' r'))) T alpha) ->
-    exists beta obl r, In (alpha,(obl,owns b beta r)) (tx_outputs tx)))
+   (~(exists h' beta' bday' obl' r', mtree_supports_asset (h',(bday',(obl',owns b beta' r'))) T (hashval_term_addr k1)) ->
+    (exists beta obl r, In (hashval_term_addr k1,(obl,owns b beta r)) (tx_outputs tx))
+    /\
+    (if b then
+     (exists obl2 obl3,
+        In (hashval_term_addr (hashpair k1 k2),(obl2,marker)) (tx_outputs tx) (*** record the prop with this proof ***)
+        /\
+        In (hashval_term_addr k1,(obl3,marker)) (tx_outputs tx)) (*** record that the prop is provable ***)
+     else
+       exists obl2,
+         In (hashval_term_addr (hashpair k1 k2),(obl2,marker)) (tx_outputs tx)))) (*** record that the trm has the tp ***)
 /\
 (*** 
  Bounties can be collected by the owners of props.
@@ -781,7 +843,7 @@ intros H1 H2. induction H2 as [|h a u inpl alpha v H2 IH H3|h a inpl alpha v H2 
   + assumption.
 Qed.
 
-Lemma subqm_rights_consumed (T1 T2:mtree 162) (b:bool) (alpha:addr) (inpl:list addr_assetid) (utot:nat) :
+Lemma subqm_rights_consumed (T1 T2:mtree 162) (b:bool) (alpha:termaddr) (inpl:list addr_assetid) (utot:nat) :
   subqm T1 T2
   -> mtree_rights_consumed b alpha T1 inpl utot
   -> mtree_rights_consumed b alpha T2 inpl utot.
@@ -1021,12 +1083,111 @@ destruct (Hf2 h alpha oblu1 alpha oblu2 L1 L2) as [_ H4].
 congruence.
 Qed.
 
-Theorem mtree_supports_tx_can_support m tx (T:mtree 162) fee rew :
-  mtree_supports_tx m tx T fee rew ->
+Lemma mtree_check_signaspec_r_marker sigt T th thy d h :
+  In h (signaspec_stp_markers d) \/ In h (signaspec_known_markers th d) ->
+  check_signaspec_r (mtree_lookup_stp T) (mtree_lookup_known T) sigt th thy d ->
+  exists (k : hashval) (bday : nat) (obl : obligation),
+    mtree_supports_asset (k, (bday, (obl, marker))) T (hashval_term_addr h).
+intros H1 H2. induction d as [|[h'|h' a|m a|p] dr IH].
+- destruct H1 as [[]|[]].
+- simpl in H1. simpl in H2. destruct sigt as [sigt|].
+  + destruct (signa_lookup (hashval_bit160 h') sigt) as [sth [y z]] eqn:E1.
+    apply IH.
+    * exact H1.
+    * destruct H2 as [H2 _]. exact H2.
+  + contradiction H2.
+- destruct H2 as [H3 [k [bday [obl H4]]]].
+  simpl in H1. destruct H1 as [[H1|H1]|H1].
+  + exists k. exists bday. exists obl. subst h. exact H4.
+  + apply IH.
+    * left. exact H1.
+    * exact H3.
+  + apply IH.
+    * right. exact H1.
+    * exact H3.
+- destruct H2 as [H3 H4]. apply IH.
+  + exact H1.
+  + exact H3.
+- destruct H2 as [H3 [k [bday [obl H4]]]].
+  simpl in H1. destruct H1 as [H1|[H1|H1]].
+  + apply IH.
+    * left. exact H1.
+    * exact H3.
+  + exists k. exists bday. exists obl. subst h. exact H4.
+  + apply IH.
+    * right. exact H1.
+    * exact H3.
+Qed.
+
+Lemma mtree_check_signaspec_p_marker tht sigt T th d h :
+  In h (signaspec_stp_markers d) \/ In h (signaspec_known_markers th d) ->
+  check_signaspec_p (mtree_lookup_stp T) (mtree_lookup_known T) tht sigt th d ->
+  exists (k : hashval) (bday : nat) (obl' : obligation),
+    mtree_supports_asset (k, (bday, (obl', marker))) T (hashval_term_addr h).
+unfold check_signaspec_p. destruct th as [th|].
+- destruct tht as [tht|].
+  + apply mtree_check_signaspec_r_marker.
+  + tauto.
+- apply mtree_check_signaspec_r_marker.
+Qed.
+
+Lemma mtree_check_doc_r_marker sigt T th thy d h :
+  In h (doc_stp_markers d) \/ In h (doc_known_markers th d) ->
+  check_doc_r (mtree_lookup_stp T) (mtree_lookup_known T) sigt th thy d ->
+  exists (k : hashval) (bday : nat) (obl : obligation),
+    mtree_supports_asset (k, (bday, (obl, marker))) T (hashval_term_addr h).
+intros H1 H2. induction d as [|[h'|h' a|m a|p|p d] dr IH].
+- destruct H1 as [[]|[]].
+- simpl in H1. simpl in H2. destruct sigt as [sigt|].
+  + destruct (signa_lookup (hashval_bit160 h') sigt) as [sth [y z]] eqn:E1.
+    apply IH.
+    * exact H1.
+    * destruct H2 as [H2 _]. exact H2.
+  + contradiction H2.
+- destruct H2 as [H3 [k [bday [obl H4]]]].
+  simpl in H1. destruct H1 as [[H1|H1]|H1].
+  + exists k. exists bday. exists obl. subst h. exact H4.
+  + apply IH.
+    * left. exact H1.
+    * exact H3.
+  + apply IH.
+    * right. exact H1.
+    * exact H3.
+- destruct H2 as [H3 H4]. apply IH.
+  + exact H1.
+  + exact H3.
+- destruct H2 as [H3 [k [bday [obl H4]]]].
+  simpl in H1. destruct H1 as [H1|[H1|H1]].
+  + apply IH.
+    * left. exact H1.
+    * exact H3.
+  + exists k. exists bday. exists obl. subst h. exact H4.
+  + apply IH.
+    * right. exact H1.
+    * exact H3.
+- destruct H2 as [H3 H4]. apply IH.
+  + exact H1.
+  + exact H3.
+Qed.
+
+Lemma mtree_check_doc_p_marker tht sigt T th d h :
+  In h (doc_stp_markers d) \/ In h (doc_known_markers th d) ->
+  check_doc_p (mtree_lookup_stp T) (mtree_lookup_known T) tht sigt th d ->
+  exists (k : hashval) (bday : nat) (obl' : obligation),
+    mtree_supports_asset (k, (bday, (obl', marker))) T (hashval_term_addr h).
+unfold check_doc_p. destruct th as [th|].
+- destruct tht as [tht|].
+  + apply mtree_check_doc_r_marker.
+  + tauto.
+- apply mtree_check_doc_r_marker.
+Qed.
+
+Theorem mtree_supports_tx_can_support tht sigt m tx (T:mtree 162) fee rew :
+  mtree_supports_tx tht sigt m tx T fee rew ->
   mtree_can_support_tx tx T.
-intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [Hs5 [Hs6 [Hs7 Hs8]]]]]]. repeat split.
+intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [[Hs5a [Hs5b Hs5c]] [Hs6 [Hs7 Hs8]]]]]]. repeat split.
 - destruct tx as [inpl outpl]. simpl. simpl in Hs2.
-  clear Hs1 fee rew Hs3 Hs4a Hs4b Hs5 Hs6 Hs7 Hs8.
+  clear Hs1 fee rew Hs3 Hs4a Hs4b Hs5a Hs5b Hs5c Hs6 Hs7 Hs8.
   induction Hs2 as [|h a u inpl alpha v H1 IH H2 H3 H4|h a inpl alpha v H1 IH H2 H3 H4].
   + intros alpha h [].
   + intros beta k [H5|H5].
@@ -1045,16 +1206,45 @@ intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [Hs5 [Hs6 [Hs7 Hs8]]]]]]. repeat spli
   { right. exists alpha. exists obl. exists n. exact H1. }
   destruct (Hs4a beta b L1) as [H2 _].
   exact H2.
-- intros alpha b H1. destruct (Hs7 alpha b H1) as [H2 _]. exact H2.
+- intros alpha b H1.
+  assert (L1: rights_mentioned alpha b (tx_outputs tx)).
+  { left. exact H1. }
+  destruct (Hs4a alpha b L1) as [H2 _].
+  exact H2.
+- intros k1 k2 b H1. destruct (Hs7 k1 k2 b H1) as [H2 _]. exact H2.
 - intros alpha obl b beta r H1. destruct (Hs6 alpha b obl beta r H1) as [H2 _]. exact H2.
+- intros obl gamma nonce th d alpha h H1 H2.
+  destruct (Hs5b obl gamma nonce th d alpha H1) as [H3 _].
+  revert H2 H3. apply mtree_check_signaspec_p_marker.
+- intros obl gamma nonce th d alpha h H1 H2.
+  destruct (Hs5c obl gamma nonce th d alpha H1) as [H3 _].
+  revert H2 H3. apply mtree_check_doc_p_marker.
 Qed.
 
-Theorem subqm_supports_tx m tx (T1 T2:mtree 162) fee rew :
+Lemma subqm_lookup_stp (T1 T2:mtree 162) h a :
+  subqm T1 T2 ->
+  mtree_lookup_stp T1 h a ->
+  mtree_lookup_stp T2 h a.
+unfold mtree_lookup_stp. intros H1 [k [bday [obl H2]]].
+exists k. exists bday. exists obl. revert H2.
+apply subqm_supports_asset. exact H1.
+Qed.
+
+Lemma subqm_lookup_known (T1 T2:mtree 162) h :
+  subqm T1 T2 ->
+  mtree_lookup_known T1 h ->
+  mtree_lookup_known T2 h.
+unfold mtree_lookup_stp. intros H1 [k [bday [obl H2]]].
+exists k. exists bday. exists obl. revert H2.
+apply subqm_supports_asset. exact H1.
+Qed.
+
+Theorem subqm_supports_tx tht sigt m tx (T1 T2:mtree 162) fee rew :
   mtree_valid T2 ->
   subqm T1 T2 ->
-  mtree_supports_tx m tx T1 fee rew ->
-  mtree_supports_tx m tx T2 fee rew.
-intros H0 H1 Hs. generalize Hs. intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [Hs5 [Hs6 [Hs7 Hs8]]]]]].
+  mtree_supports_tx tht sigt m tx T1 fee rew ->
+  mtree_supports_tx tht sigt m tx T2 fee rew.
+intros H0 H1 Hs. generalize Hs. intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [[Hs5a [Hs5b Hs5c]] [Hs6 [Hs7 Hs8]]]]]].
 apply mtree_supports_tx_can_support in Hs.
 destruct Hs as [Hc1 [Hc2 [Hc3 [Hc4 Hc5]]]].
 split.
@@ -1074,7 +1264,7 @@ split.
             exists h'. exists bday'. exists obl'. exists beta'.
             revert H1 Hs4aa H3. apply subqm_full_approx_supports_asset_conv.
           + intros rtot1 rtot2 h bday obl beta u H3 H4 H5.
-            assert (L1: mtree_supports_asset (h, (bday,(obl, owns b beta (Some u)))) T1 alpha).
+            assert (L1: mtree_supports_asset (h, (bday,(obl, owns b beta (Some u)))) T1 (termaddr_addr alpha)).
             { revert H4. apply subqm_full_approx_supports_asset_conv.
               - exact H1.
               - exact Hs4aa.
@@ -1101,13 +1291,40 @@ split.
           revert H2 L1. apply Hs4b.
       }
     * { split.
-        - intros obl nonce th d alpha H2.
-          destruct (Hs5 obl nonce th d alpha H2) as [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]].
-          exists beta. exists h. exists bday'. exists obl'. repeat split.
-          + exact H3.
-          + exact H4.
-          + exact H5.
-          + revert H1 H6. apply subqm_supports_asset.
+        - split.
+          + intros obl gamma nonce d alpha H2.
+            destruct (Hs5a obl gamma nonce d alpha H2) as [Hch [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]]].
+            split; try exact Hch.
+            exists beta. exists h. exists bday'. exists obl'. repeat split.
+            * exact H3.
+            * exact H4.
+            * exact H5.
+            * revert H1 H6. apply subqm_supports_asset.
+          + split.
+            * { intros obl gamma nonce th d alpha H2.
+                destruct (Hs5b obl gamma nonce th d alpha H2) as [Hch [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]]].
+                split.
+                - revert Hch. apply check_signaspec_p_subq.
+                  + intros h' a'. apply subqm_lookup_stp. exact H1.
+                  + intros h'. apply subqm_lookup_known. exact H1.
+                - exists beta. exists h. exists bday'. exists obl'. repeat split.
+                  + exact H3.
+                  + exact H4.
+                  + exact H5.
+                  + revert H1 H6. apply subqm_supports_asset.
+              }
+            * { intros obl gamma nonce th d alpha H2.
+                destruct (Hs5c obl gamma nonce th d alpha H2) as [Hch [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]]].
+                split.
+                - revert Hch. apply check_doc_p_subq.
+                  + intros h' a'. apply subqm_lookup_stp. exact H1.
+                  + intros h'. apply subqm_lookup_known. exact H1.
+                - exists beta. exists h. exists bday'. exists obl'. repeat split.
+                  + exact H3.
+                  + exact H4.
+                  + exact H5.
+                  + revert H1 H6. apply subqm_supports_asset.
+              }
         - split.
           + intros alpha b obl beta r H2.
             destruct (Hs6 alpha b obl beta r H2) as [H3 [[h [beta' [bday' [obl' [r' [H4 H5]]]]]]|[H4 H5]]]; split.
@@ -1124,8 +1341,8 @@ split.
                 - exact H5.
               }
           + split.
-            * { intros alpha b H2.
-                destruct (Hs7 alpha b H2) as [H3 H4]. split.
+            * { intros k1 k2 b H2.
+                destruct (Hs7 k1 k2 b H2) as [H3 H4]. split.
                 - revert H1 H3. apply subqm_full_approx_addr.
                 - intros H5. apply H4. intros [h' [beta' [bday' [obl' [r' H6]]]]].
                   apply H5. exists h'. exists beta'. exists bday'. exists obl'. exists r'.
@@ -1154,11 +1371,11 @@ split.
       }
 Qed.
 
-Theorem mtree_supports_tx_lub_1 m tx (T1 T2:mtree 162) fee rew :
+Theorem mtree_supports_tx_lub_1 tht sigt m tx (T1 T2:mtree 162) fee rew :
   mtree_valid T1 ->
   mtree_hashroot T1 = mtree_hashroot T2 ->
-  mtree_supports_tx m tx T1 fee rew ->
-  mtree_supports_tx m tx (mtree_lub T1 T2) fee rew.
+  mtree_supports_tx tht sigt m tx T1 fee rew ->
+  mtree_supports_tx tht sigt m tx (mtree_lub T1 T2) fee rew.
 intros H0 H1. apply subqm_supports_tx.
 - revert H0. apply mtree_hashroot_eq_valid.
   apply mtree_lub_eq_1. exact H1.
@@ -1839,12 +2056,54 @@ induction H as [|h a u inpr alpha v H2 IH H3 H4 H5|h a inpr alpha v H2 IH H3 H4 
   + exact H5.
 Qed.
 
-Theorem mtree_supports_tx_statefun m tx (T:mtree 162) f fee rew :
+Lemma mtree_approx_fun_lookup_stp T f h a :
+  mtree_approx_fun_p T f ->
+  mtree_lookup_stp T h a ->
+  sf_lookup_stp f h a.
+unfold mtree_lookup_stp. intros H1 [k [bday [obl H2]]].
+exists k. exists bday. exists obl. revert H2.
+apply mtree_supports_asset_In_statefun. exact H1.
+Qed.
+
+Lemma mtree_approx_fun_lookup_known T f h :
+  mtree_approx_fun_p T f ->
+  mtree_lookup_known T h ->
+  sf_lookup_known f h.
+unfold mtree_lookup_stp. intros H1 [k [bday [obl H2]]].
+exists k. exists bday. exists obl. revert H2.
+apply mtree_supports_asset_In_statefun. exact H1.
+Qed.
+
+Lemma mtree_full_approx_fun_lookup_stp_conv T f h a :
+  mtree_approx_fun_p T f ->
+  mtree_full_approx_addr T (hashval_term_addr (hashpair h (hashstp a))) ->
+  sf_lookup_stp f h a ->
+  mtree_lookup_stp T h a.
+unfold mtree_lookup_stp. intros H1 Ha [k [bday [obl H2]]].
+exists k. exists bday. exists obl. revert H2.
+apply mtree_supports_asset_In_statefun_conv.
+- exact H1.
+- exact Ha.
+Qed.
+
+Lemma mtree_full_approx_fun_lookup_known_conv T f h :
+  mtree_approx_fun_p T f ->
+  mtree_full_approx_addr T (hashval_term_addr h) ->
+  sf_lookup_known f h ->
+  mtree_lookup_known T h.
+unfold mtree_lookup_stp. intros H1 Ha [k [bday [obl H2]]].
+exists k. exists bday. exists obl. revert H2.
+apply mtree_supports_asset_In_statefun_conv.
+- exact H1.
+- exact Ha.
+Qed.
+
+Theorem mtree_supports_tx_statefun tht sigt m tx (T:mtree 162) f fee rew :
   (forall h alpha u alpha' u', In (h,u) (f alpha) -> In (h,u') (f alpha') -> alpha = alpha' /\ u = u') ->
   mtree_approx_fun_p T f ->  
-  mtree_supports_tx m tx T fee rew ->
-  statefun_supports_tx m f tx fee rew.
-intros Hf2 H1 Hs. generalize Hs. intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [Hs5 [Hs6 [Hs7 Hs8]]]]]]. split.
+  mtree_supports_tx tht sigt m tx T fee rew ->
+  statefun_supports_tx tht sigt m f tx fee rew.
+intros Hf2 H1 Hs. generalize Hs. intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [[Hs5a [Hs5b Hs5c]] [Hs6 [Hs7 Hs8]]]]]]. split.
 - exists utot. split.
   + destruct tx as [inpl outpl]. simpl. simpl in Hs2.
     revert Hs2. 
@@ -1863,7 +2122,7 @@ intros Hf2 H1 Hs. generalize Hs. intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [Hs5
           + exact H1.
           + exact H3.
         - intros rtot1 rtot2 h bday obl beta u H6 H7 H8.
-          assert (L2: mtree_supports_asset (h, (bday, (obl, owns b beta (Some u)))) T alpha).
+          assert (L2: mtree_supports_asset (h, (bday, (obl, owns b beta (Some u)))) T (termaddr_addr alpha)).
           { revert H7.
             apply mtree_supports_asset_In_statefun_conv.
             - exact H1.
@@ -1878,7 +2137,7 @@ intros Hf2 H1 Hs. generalize Hs. intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [Hs5
       }
     * { intros alpha b beta h bday obl n H2 H3.
         assert (L1: mtree_supports_asset (h, (bday, (obl, rights b n alpha))) T beta).
-        { generalize (mtree_supports_tx_can_support _ _ _ _ _ Hs).
+        { generalize (mtree_supports_tx_can_support _ _ _ _ _ _ _ Hs).
           intros [Hc1 _].
           destruct (Hc1 _ _ H2) as [[obl' v] H4].
           generalize (mtree_supports_asset_In_statefun _ _ _ _ H1 H4).
@@ -1890,13 +2149,38 @@ intros Hf2 H1 Hs. generalize Hs. intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [Hs5
         revert H2 L1. apply Hs4b.
       }
   + split.
-    * { intros obl nonce th d alpha H2.
-        destruct (Hs5 obl nonce th d alpha H2) as [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]].
-        exists beta. exists h. exists bday'. exists obl'. repeat split.
-        - exact H3.
-        - exact H4.
-        - exact H5.
-        - revert H6. apply mtree_supports_asset_In_statefun. exact H1.
+    * { split; [|split].
+        - intros obl gamma nonce d alpha H2.
+          destruct (Hs5a obl gamma nonce d alpha H2) as [Hch [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]]].
+          split.
+          + exact Hch.
+          + exists beta. exists h. exists bday'. exists obl'. repeat split.
+            * exact H3.
+            * exact H4.
+            * exact H5.
+            * revert H6. apply mtree_supports_asset_In_statefun. exact H1.
+        - intros obl gamma nonce th d alpha H2.
+          destruct (Hs5b obl gamma nonce th d alpha H2) as [Hch [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]]].
+          split.
+          + revert Hch. apply check_signaspec_p_subq.
+            * intros k b. apply mtree_approx_fun_lookup_stp. exact H1.
+            * intros k. apply mtree_approx_fun_lookup_known. exact H1.
+          + exists beta. exists h. exists bday'. exists obl'. repeat split.
+            * exact H3.
+            * exact H4.
+            * exact H5.
+            * revert H6. apply mtree_supports_asset_In_statefun. exact H1.
+        - intros obl gamma nonce th d alpha H2.
+          destruct (Hs5c obl gamma nonce th d alpha H2) as [Hch [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]]].
+          split.
+          + revert Hch. apply check_doc_p_subq.
+            * intros k b. apply mtree_approx_fun_lookup_stp. exact H1.
+            * intros k. apply mtree_approx_fun_lookup_known. exact H1.
+          + exists beta. exists h. exists bday'. exists obl'. repeat split.
+            * exact H3.
+            * exact H4.
+            * exact H5.
+            * revert H6. apply mtree_supports_asset_In_statefun. exact H1.
       } 
     * { split.
         - (*** 6 ***)
@@ -1915,8 +2199,8 @@ intros Hf2 H1 Hs. generalize Hs. intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [Hs5
             * exact H5.
         - split.
           + (*** 7 ***)
-            intros alpha b H2 H3.
-            destruct (Hs7 alpha b H2) as [H4 H5].
+            intros k1 k2 b H2 H3.
+            destruct (Hs7 k1 k2 b H2) as [H4 H5].
             apply H5.
             intros [h' [beta' [bday' [obl' [r' H6]]]]].
             apply H3. exists h'. exists beta'. exists bday'. exists obl'. exists r'.
@@ -1925,7 +2209,7 @@ intros Hf2 H1 Hs. generalize Hs. intros [Hs1 [[utot [Hs2 Hs3]] [[Hs4a Hs4b] [Hs5
           + (*** 8 ***)
             intros alpha h bday obl u H2 H3.
             assert (L1: mtree_supports_asset (h, (bday, (obl, bounty u))) T alpha).
-            { generalize (mtree_supports_tx_can_support _ _ _ _ _ Hs).
+            { generalize (mtree_supports_tx_can_support _ _ _ _ _ _ _ Hs).
               intros [Hc1 _].
               destruct (Hc1 _ _ H2) as [[obl' u'] H4].
               generalize (mtree_supports_asset_In_statefun _ _ _ _ H1 H4).
@@ -2053,7 +2337,7 @@ induction H as [|h a u inpr alpha v H2 IH H3 H4 H5|h a inpr alpha v H2 IH H3 H4 
   + exact H5.
 Qed.
 
-Lemma sf_mtree_rights_consumed (b:bool) (alpha:addr) (inpl : list addr_assetid) (T:mtree 162) (f:statefun) (utot:nat) :
+Lemma sf_mtree_rights_consumed (b:bool) (alpha:termaddr) (inpl : list addr_assetid) (T:mtree 162) (f:statefun) (utot:nat) :
   (forall h alpha u alpha' u', In (h,u) (f alpha) -> In (h,u') (f alpha') -> alpha = alpha' /\ u = u') ->
   mtree_approx_fun_p T f ->
   (forall (alpha : addr) (h : hashval),
@@ -2089,13 +2373,14 @@ Qed.
 
 Opaque mtree_full_approx_addr.
 
-Theorem mtree_supports_tx_statefun_conv m tx (T:mtree 162) f fee rew :
+Theorem mtree_supports_tx_statefun_conv tht sigt m tx (T:mtree 162) f fee rew :
   (forall h alpha u alpha' u', In (h,u) (f alpha) -> In (h,u') (f alpha') -> alpha = alpha' /\ u = u') ->
   mtree_approx_fun_p T f ->  
+  tx_valid m tx ->
   mtree_can_support_tx tx T ->
-  statefun_supports_tx m f tx fee rew ->
-  mtree_supports_tx m tx T fee rew.
-intros Hf2 H1 Hcs Hxf. generalize Hcs Hxf. intros [Hcs1 [Hcs2 [Hcs3 [Hcs4 Hcs5]]]] [[utot [Hxf1 Hxf2]] [[Hxf3a Hxf3b] [Hxf4 [Hxf5 [Hxf6 Hxf7]]]]].
+  statefun_supports_tx tht sigt m f tx fee rew ->
+  mtree_supports_tx tht sigt m tx T fee rew.
+intros Hf2 H1 Ht Hcs Hxf. generalize Hcs Hxf. intros [Hcs1 [Hcs2 [Hcs3 [Hcs4 [Hcs5 [Hcs6 [Hcs7 Hcs8]]]]]]] [[utot [Hxf1 Hxf2]] [[Hxf3a Hxf3b] [[Hxf4a [Hxf4b Hxf4c]] [Hxf5 [Hxf6 Hxf7]]]]].
 assert (Hcs1' : forall (alpha : addr) (h : hashval),
                   In (alpha, h) (tx_inputs tx) ->
                   exists (bday:nat) (obl:obligation) (u:preasset), mtree_supports_asset (h, (bday, (obl,u))) T alpha).
@@ -2127,7 +2412,7 @@ split.
               exists h'. exists bday'. exists obl'. exists beta'.
               revert H1 H5. apply mtree_supports_asset_In_statefun.
             * { intros rtot1 rtot2 h bday obl beta u H5 H6 H7.
-                assert (L1: In (h, (bday, (obl, owns b beta (Some u)))) (f alpha)).
+                assert (L1: In (h, (bday, (obl, owns b beta (Some u)))) (f (termaddr_addr alpha))).
                 { revert H1 H6. apply mtree_supports_asset_In_statefun. }
                 destruct (H4 rtot1 rtot2 h bday obl beta u H5 L1 H7) as [rtot3 [rtot4 [H8 [H9 H10]]]].
                 exists rtot3. exists rtot4. repeat split.
@@ -2143,22 +2428,62 @@ split.
           { revert H1 H3. apply mtree_supports_asset_In_statefun. }
           revert H2 L3. apply Hxf3b.
       }
-    * { split.
-        - intros obl nonce th d alpha H2.
-          destruct (Hxf4 obl nonce th d alpha H2) as [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]].
-          exists beta. exists h. exists bday'. exists obl'. repeat split.
-          + exact H3.
-          + exact H4.
-          + exact H5.
-          + destruct (Hcs1 _ _ H4) as [[bday2 [obl2 w]] H7].
-            generalize (mtree_supports_asset_In_statefun _ _ _ _ H1 H7).
-            intros H8.
-            destruct (Hf2 h _ _ _ _ H6 H8) as [_ H9].
-            inversion H9. subst bday2. subst obl2. subst w. exact H7.
+    * { split; [split; [|split]|].
+        - intros obl gamma nonce d alpha H2.
+          destruct (Hxf4a obl gamma nonce d alpha H2) as [Hch [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]]].
+          split.
+          + exact Hch.
+          + exists beta. exists h. exists bday'. exists obl'. repeat split.
+            * exact H3.
+            * exact H4.
+            * exact H5.
+            * destruct (Hcs1 _ _ H4) as [[bday2 [obl2 w]] H7].
+              generalize (mtree_supports_asset_In_statefun _ _ _ _ H1 H7).
+              intros H8.
+              destruct (Hf2 h _ _ _ _ H6 H8) as [_ H9].
+              inversion H9. subst bday2. subst obl2. subst w. exact H7.
+        - intros obl gamma nonce th d alpha H2.
+          destruct (Hxf4b obl gamma nonce th d alpha H2) as [Hch [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]]].
+          split.
+          + revert Hch. apply check_signaspec_p_markers.
+            * intros k b H7 H8.
+              apply (Hcs7 obl gamma nonce th d alpha (hashpair k (hashstp b)) H2).
+              left. exact H7.
+            * intros k H7 H8.
+              apply (Hcs7 obl gamma nonce th d alpha k H2).
+              right. exact H7.
+          + exists beta. exists h. exists bday'. exists obl'. repeat split.
+            * exact H3.
+            * exact H4.
+            * exact H5.
+            * destruct (Hcs1 _ _ H4) as [[bday2 [obl2 w]] H7].
+              generalize (mtree_supports_asset_In_statefun _ _ _ _ H1 H7).
+              intros H8.
+              destruct (Hf2 h _ _ _ _ H6 H8) as [_ H9].
+              inversion H9. subst bday2. subst obl2. subst w. exact H7.
+        - intros obl gamma nonce th d alpha H2.
+          destruct (Hxf4c obl gamma nonce th d alpha H2) as [Hch [beta [h [bday' [obl' [H3 [H4 [H5 H6]]]]]]]].
+          split.
+          + revert Hch. apply check_doc_p_markers.
+            * intros k b H7 H8.
+              apply (Hcs8 obl gamma nonce th d alpha (hashpair k (hashstp b)) H2).
+              left. exact H7.
+            * intros k H7 H8.
+              apply (Hcs8 obl gamma nonce th d alpha k H2).
+              right. exact H7.
+          + exists beta. exists h. exists bday'. exists obl'. repeat split.
+            * exact H3.
+            * exact H4.
+            * exact H5.
+            * destruct (Hcs1 _ _ H4) as [[bday2 [obl2 w]] H7].
+              generalize (mtree_supports_asset_In_statefun _ _ _ _ H1 H7).
+              intros H8.
+              destruct (Hf2 h _ _ _ _ H6 H8) as [_ H9].
+              inversion H9. subst bday2. subst obl2. subst w. exact H7.
         - split.
           + intros alpha b obl beta r H2.
             destruct (Hxf5 alpha b obl beta r H2) as [[h [beta' [bday' [obl' [r' [H3 H4]]]]]]|[H3 H4]]; split.
-            * revert H2. apply Hcs5.
+            * revert H2. apply Hcs6.
             * { left. exists h. exists beta'. exists bday'. exists obl'. exists r'. split.
                 - destruct (Hcs1 _ _ H4) as [[obl2 w] H6].
                   generalize (mtree_supports_asset_In_statefun _ _ _ _ H1 H6).
@@ -2167,7 +2492,7 @@ split.
                   inversion H8. subst obl2. subst w. exact H6.
                 - exact H4.
               }
-            * revert H2. apply Hcs5.
+            * revert H2. apply Hcs6.
             * { right. split.
                 - intros [h [beta' [bday' [obl' [r' H5]]]]]. apply H3.
                   exists h. exists beta'. exists bday'. exists obl'. exists r'.
@@ -2176,30 +2501,33 @@ split.
                 - exact H4.
               }
           + split.
-            * { intros alpha b H2. split.
-                - revert H2. apply Hcs4.
-                - intros H3.
-                  assert (L1: ~ exists (h' : hashval) (beta' : addr) (bday':nat) (obl' : obligation) (r' : option nat), In (h', (bday',(obl', owns true beta' r'))) (f alpha)).
-                  { intros [h' [beta' [bday' [obl' [r' H4]]]]].
-                    apply H3. exists h'. exists beta'. exists bday'. exists obl'. exists r'.
-                    revert H4. 
-                    apply mtree_supports_asset_In_statefun_conv.
-                    - exact H1.
-                    - revert H2. apply Hcs4.
-                  }
-                  exact (Hxf6 alpha b H2 L1).
+            * { intros k1 k2 b H2. split.
+                - revert H2. apply Hcs5.
+                - intros H3. 
+                  assert (L1: ~ exists (h' : hashval) (beta' : payaddr) (bday':nat) (obl' : obligation) (r' : option nat), In (h', (bday',(obl', owns b beta' r'))) (f (hashval_term_addr k1))).
+                    { intros [h' [beta' [bday' [obl' [r' H4]]]]].
+                      apply H3. exists h'. exists beta'. exists bday'. exists obl'. exists r'.
+                      revert H4. 
+                      apply mtree_supports_asset_In_statefun_conv.
+                      - exact H1.
+                      - revert H2. apply Hcs5.
+                    }
+                    exact (Hxf6 k1 k2 b H2 L1).
               }
             * { intros alpha h bday obl u H2 H3.
                 assert (L1: In (h, (bday, (obl, bounty u))) (f alpha)).
                 { revert H3. apply mtree_supports_asset_In_statefun. exact H1. }
                 destruct (Hxf7 alpha h bday obl u H2 L1) as [h' [bday' [obl' [beta [r [H4 [H5 H6]]]]]]].
+                destruct Ht as [_ [_ [Hto2 _]]].
+                generalize (Hto2 alpha obl' true beta r H6). intros H7.
+                destruct alpha as [[|] [[|] alpha]]; try contradiction H7.
                 split.
-                - revert H6. apply Hcs5.
+                - revert H6. apply Hcs6.
                 - exists h'. exists bday'. exists obl'. exists beta. exists r. repeat split.
                   + exact H4.
                   + revert H5. apply mtree_supports_asset_In_statefun_conv.
                     * exact H1.
-                    * revert H6. apply Hcs5.
+                    * revert H6. apply Hcs6.
                   + exact H6.
               }
       }
@@ -2245,7 +2573,6 @@ induction l as [k| |[k v] l IH].
         - f_equal. exact IH.
       } 
 Qed.
-
 
 Lemma hashassetlist_app al1 al2 hl2 :
   hashassetlist al2 = hlist_hashroot hl2 ->
@@ -2859,9 +3186,9 @@ Opaque mtree_approx_fun_p.
 
 Opaque mtree_supports_addr.
 
-Theorem mtree_approx_trans m (tx:Tx) T f fee rew :
+Theorem mtree_approx_trans tht sigt m (tx:Tx) T f fee rew :
   sf_valid f ->
-  mtree_supports_tx m tx T fee rew ->
+  mtree_supports_tx tht sigt m tx T fee rew ->
   mtree_approx_fun_p T f ->
   mtree_approx_fun_p (tx_mtree_trans m tx T) (tx_statefun_trans m tx f).
 intros Hf H1 H2. destruct tx as [fullinpl fulloutpl].
@@ -2878,7 +3205,7 @@ apply (@approx_trans_lem 162 m fullinpl fulloutpl txh fullinpl (add_vout m txh f
 - apply inpl_reln_start.
 - apply outpl_reln_start.
 - now apply sf_valid_fnl.
-- generalize (mtree_supports_tx_can_support _ _ _ _ _ H1).
+- generalize (mtree_supports_tx_can_support _ _ _ _ _ _ _ H1).
   intros [H3 H4].
   apply mtree_supports_tx_can_support in H1.
   destruct H1 as [H1a [H1b _]]. split.
@@ -2889,13 +3216,13 @@ apply (@approx_trans_lem 162 m fullinpl fulloutpl txh fullinpl (add_vout m txh f
 - exact H2.
 Qed.
 
-Theorem mtree_normal_approx_trans m (tx:Tx) T f fee rew :
+Theorem mtree_normal_approx_trans tht sigt m (tx:Tx) T f fee rew :
   sf_valid f ->
-  mtree_supports_tx m tx T fee rew ->
+  mtree_supports_tx tht sigt m tx T fee rew ->
   mtree_approx_fun_p T f ->
   mtree_approx_fun_p (normalize_mtree (tx_mtree_trans m tx T)) (tx_statefun_trans m tx f).
 intros H1 H2 H3.
-generalize (mtree_approx_trans m tx T f fee rew H1 H2 H3).
+generalize (mtree_approx_trans tht sigt m tx T f fee rew H1 H2 H3).
 apply normalize_mtree_approx_fun_p.
 Qed.
 
@@ -3034,45 +3361,45 @@ destruct (mtree_approx_fun_p_totalassets T f al H1) as [H3 _].
 exact (H3 H2).
 Qed.
 
-Theorem mtree_normalize_tx_asset_value_sum (blockheight:nat) (T:mtree 162) (tx:Tx) (fee rew:nat) (al bl:list asset) :
+Theorem mtree_normalize_tx_asset_value_sum tht sigt (blockheight:nat) (T:mtree 162) (tx:Tx) (fee rew:nat) (al bl:list asset) :
   mtree_valid T ->
   tx_valid blockheight tx ->
-  mtree_supports_tx blockheight tx T fee rew ->
+  mtree_supports_tx tht sigt blockheight tx T fee rew ->
   mtree_totalassets T al ->
   mtree_totalassets (normalize_mtree (tx_mtree_trans blockheight tx T)) bl ->
-  asset_value_sum bl + fee = asset_value_sum al + rew.
+  asset_value_sum bl + fee + out_burncost (tx_outputs tx) = asset_value_sum al + rew.
 intros [f [H1 H2]] [H3a H3b] H4 H5 H6.
 assert (L1: asset_value_sum al = statefun_totalunits f).
 { exact (mtree_totalunits_lem T f al H2 H5). }
 assert (L2: mtree_approx_fun_p (normalize_mtree (tx_mtree_trans blockheight tx T)) (tx_statefun_trans blockheight tx f)).
-{ exact (mtree_normal_approx_trans blockheight tx T f fee rew H1 H4 H2). }
+{ exact (mtree_normal_approx_trans tht sigt blockheight tx T f fee rew H1 H4 H2). }
 assert (L3: asset_value_sum bl = statefun_totalunits (tx_statefun_trans blockheight tx f)).
 { exact (mtree_totalunits_lem (normalize_mtree (tx_mtree_trans blockheight tx T)) (tx_statefun_trans blockheight tx f) bl L2 H6). }
 rewrite L1. rewrite L3.
-apply (totalunits_bdd blockheight f tx fee rew H1).
+apply (totalunits_bdd tht sigt blockheight f tx fee rew H1).
 - destruct tx as [inpl outpl]. split.
   + exact H3a.
   + exact H3b.
 - destruct H1 as [_ [Hf2 _]].
-  exact (mtree_supports_tx_statefun blockheight tx T f fee rew Hf2 H2 H4).
+  exact (mtree_supports_tx_statefun tht sigt blockheight tx T f fee rew Hf2 H2 H4).
 Qed.
 
-Theorem mtree_valid_tx_mtree_trans m tx T fee rew :
+Theorem mtree_valid_tx_mtree_trans tht sigt m tx T fee rew :
   tx_valid m tx ->
-  mtree_supports_tx m tx T fee rew ->
+  mtree_supports_tx tht sigt m tx T fee rew ->
   mtree_valid T ->
   mtree_valid (tx_mtree_trans m tx T).
 intros H0 H1 [f [H2 H3]].
 exists (tx_statefun_trans m tx f).
 split.
-- apply sf_tx_valid_thm with (bday := m) (fee := fee) (rew := rew).
+- apply sf_tx_valid_thm with (tht := tht) (sigt := sigt) (bday := m) (fee := fee) (rew := rew).
   + exact H2.
   + exact H0.
-  + apply (mtree_supports_tx_statefun m tx T f fee rew).
+  + apply (mtree_supports_tx_statefun tht sigt m tx T f fee rew).
     * destruct H2 as [_ [Hf2 _]]. exact Hf2.
     * exact H3.
     * exact H1.
-- apply mtree_approx_trans with (fee := fee) (rew := rew).
+- apply mtree_approx_trans with (tht := tht) (sigt := sigt) (fee := fee) (rew := rew).
   + exact H2.
   + exact H1.
   + exact H3.

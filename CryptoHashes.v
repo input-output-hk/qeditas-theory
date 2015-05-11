@@ -337,17 +337,35 @@ destruct h as [h|]; destruct h' as [h'|].
 Defined.
 
 (***
- Finally assume parameters for turning hashvals into an addresses.
- We do not assume they are injective or have disjoint images.
- In practice this will effectively be the case,
- but the results are stated in ways to avoid needing this.
- There are four different kinds of addresses, so addresses have 162 bytes instead of 160.
- 
+ Finally assume a parameter for turning hashvals into an 160 bit sequences.
+ (In the implementation hashvals are represented by 160 bit sequences.)
+ These can be used to give different kinds of addresses (162 bites).
  ***)
-Parameter hashval_p2pkh_addr : hashval -> addr.
-Parameter hashval_p2sh_addr : hashval -> addr.
-Parameter hashval_term_addr : hashval -> addr.
-Parameter hashval_intention_addr : hashval -> addr.
+Parameter hashval_bit160 : hashval -> bitseq 160.
+
+Definition hashval_termaddr (h:hashval) : termaddr :=
+hashval_bit160 h.
+
+Definition hashval_pubaddr (h:hashval) : pubaddr :=
+hashval_bit160 h.
+
+Definition hashval_p2pkh_payaddr (h:hashval) : payaddr :=
+(false,hashval_bit160 h).
+
+Definition hashval_p2sh_payaddr (h:hashval) : payaddr :=
+(true,hashval_bit160 h).
+
+Definition hashval_p2pkh_addr (h:hashval) : addr :=
+(false,(false,hashval_bit160 h)).
+
+Definition hashval_p2sh_addr (h:hashval) : addr :=
+(false,(true,hashval_bit160 h)).
+
+Definition hashval_term_addr (h:hashval) : addr :=
+(true,(false,hashval_bit160 h)).
+
+Definition hashval_publication_addr (h:hashval) : addr :=
+(true,(true,hashval_bit160 h)).
 
 (***
  Also assume a way of serializing hashes.

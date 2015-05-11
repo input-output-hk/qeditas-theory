@@ -29,7 +29,7 @@ Inductive sf_spent {n} (f:bitseq n -> list asset) (h:hashval) : Prop :=
 | sf_spent_R inpl outpl i alpha : sf_spent f (hashpair (hashtx(inpl,outpl)) (hashnat i)) -> In (alpha,h) inpl -> sf_spent f h
 .
 
-Inductive sf_rights_consumed (b:bool) (alpha:addr) (f:statefun) : list addr_assetid -> nat -> Prop :=
+Inductive sf_rights_consumed (b:bool) (alpha:termaddr) (f:statefun) : list addr_assetid -> nat -> Prop :=
 | sf_rights_consumed_nil : sf_rights_consumed b alpha f nil 0
 | sf_rights_consumed_cons beta h inpr r1 bday obl r2:
     sf_rights_consumed b alpha f inpr r1 ->
@@ -109,33 +109,44 @@ Definition statefun_totalassets (f:statefun) : list asset := totalassets_ f.
 Definition statefun_totalunits (f:statefun) : nat := 
 asset_value_sum (statefun_totalassets f).
 
-Definition statefun_rights_balanced (f:statefun) (alpha:addr) (b:bool) (inpl:list addr_assetid) (outpl:list addr_preasset) : Prop :=
+Definition statefun_rights_balanced (f:statefun) (alpha:termaddr) (b:bool) (inpl:list addr_assetid) (outpl:list addr_preasset) : Prop :=
    (forall (rtot1 rtot2 : nat) (h : hashval) (bday: nat) (obl : obligation) 
-      (beta : addr) (u : nat),
+      (beta : payaddr) (u : nat),
     count_rights_used (output_uses b outpl) alpha = rtot1 ->
      (*** if it's owned at all... (otherwise it can be freely used) ***)
-    In (h, (bday, (obl, owns b beta (Some u)))) (f alpha) ->
+    In (h, (bday, (obl, owns b beta (Some u)))) (f (termaddr_addr alpha)) ->
      (*** rights_out computes the leftover rights being output ***)
     rights_out b outpl alpha = rtot2 ->
     exists rtot3 rtot4 : nat,
       (*** these are the rights being 'spent' ***)
       sf_rights_consumed b alpha f inpl rtot3 /\
       (*** these are rights being bought from the owner ***)
-      rtot4 * u <= units_sent_to_addr beta outpl /\ (*** If u is 0 and nothing is sent to beta, then rtot4 can be any number. ***)
+      rtot4 * u <= units_sent_to_addr (payaddr_addr beta) outpl /\ (*** If u is 0 and nothing is sent to beta, then rtot4 can be any number. ***)
       rtot1 + rtot2 = rtot3 + rtot4).
 
-Definition statefun_supports_tx blkheight (f:addr -> list asset) (tx:Tx) (fee rew:nat) : Prop :=
+(*** A marker at the term address for #(#_{th}trm,#a) means trm has type a in theory with hash th. ***)
+Definition sf_lookup_stp (f:addr -> list asset) (h:hashval) (a:stp) : Prop :=
+  exists k bday obl,
+  In (k,(bday,(obl,marker))) (f (hashval_term_addr (hashpair h (hashstp a)))).
+
+(*** A marker at the term address for #(#_{th}trm,0) means trm has been proven in theory with hash th. ***)
+Definition sf_lookup_known (f:addr -> list asset) (h:hashval) : Prop :=
+  exists k bday obl,
+    In (k,(bday,(obl,marker))) (f (hashval_term_addr h)).
+
+(*** Test if a state function f supports a transaction tx, relative to a theory hash tree, signature hash tree, block height, fee, reward, and burn. ***)
+Definition statefun_supports_tx (tht:option (ttree 160)) (sigt:option (stree 160)) blkheight (f:addr -> list asset) (tx:Tx) (fee rew:nat) : Prop :=
 (exists utot:nat,
    statefun_asset_value_in f (tx_inputs tx) utot
    /\
-   asset_value_out (tx_outputs tx) + fee = utot + rew)
+   asset_value_out (tx_outputs tx) + fee + out_burncost (tx_outputs tx) = utot + rew)
 /\
 (*** if rights are mentioned (i.e., being output and/or used), then they must be transfered or purchased from the owner (who creates them) ***)
 ((forall alpha b,
     (*** these are the rights being used up (to publish documents or to move/sell rights) that use alpha in this transaction ***)
     rights_mentioned alpha b (tx_outputs tx) ->
     (*** it's not owned by someone blocking its use and... ***)
-    ((~exists h' bday' obl' beta', In (h',(bday',(obl',owns b beta' None))) (f alpha))
+    ((~exists h' bday' obl' beta', In (h',(bday',(obl',owns b beta' None))) (f (termaddr_addr alpha)))
      /\
      statefun_rights_balanced f alpha b (tx_inputs tx) (tx_outputs tx)))
  /\
@@ -145,33 +156,73 @@ Definition statefun_supports_tx blkheight (f:addr -> list asset) (tx:Tx) (fee re
     In (h,(bday,(obl,rights b n alpha))) (f beta) ->
     rights_mentioned alpha b (tx_outputs tx)))
 /\
-(*** publications were declared in advance by a currently usable intention ***)
-(forall obl nonce th d alpha,
-   In (alpha,(obl,docpublication nonce th d)) (tx_outputs tx) ->
-   exists beta h bday obl,
-     beta = hashval_intention_addr (hashpair (hashnat nonce) (hashopair2 th (hashdoc d)))
-     /\
-     In (beta,h) (tx_inputs tx)
-     /\
-     bday + intention_minage <= blkheight
-     /\
-     In (h,(bday,(obl,intention alpha))) (f beta))
+(*** publications were declared in advance by a currently usable intention and are correct ***)
+((forall obl gamma nonce d alpha,
+    In (alpha,(obl,theorypublication gamma nonce d)) (tx_outputs tx) ->
+    check_theoryspec_p d
+    /\
+    exists beta h bday obl,
+      beta = hashval_publication_addr (hashpair (hashaddr (payaddr_addr gamma)) (hashpair (hashnat nonce) (hashtheoryspec d)))
+      /\
+      In (beta,h) (tx_inputs tx)
+      /\
+      bday + intention_minage <= blkheight
+      /\
+      In (h,(bday,(obl,marker))) (f beta))
+ /\
+ (forall obl gamma nonce th d alpha,
+    In (alpha,(obl,signapublication gamma nonce th d)) (tx_outputs tx) ->
+    check_signaspec_p (sf_lookup_stp f) (sf_lookup_known f) tht sigt th d
+    /\
+    exists beta h bday obl,
+      beta = hashval_publication_addr (hashpair (hashaddr (payaddr_addr gamma)) (hashpair (hashnat nonce) (hashopair2 th (hashsignaspec d))))
+      /\
+      In (beta,h) (tx_inputs tx)
+      /\
+      bday + intention_minage <= blkheight
+      /\
+      In (h,(bday,(obl,marker))) (f beta))
+ /\
+ (forall obl gamma nonce th d alpha,
+    In (alpha,(obl,docpublication gamma nonce th d)) (tx_outputs tx) ->
+    check_doc_p (sf_lookup_stp f) (sf_lookup_known f) tht sigt th d
+    /\
+    exists beta h bday obl,
+      beta = hashval_publication_addr (hashpair (hashaddr (payaddr_addr gamma)) (hashpair (hashnat nonce) (hashopair2 th (hashdoc d))))
+      /\
+      In (beta,h) (tx_inputs tx)
+      /\
+      bday + intention_minage <= blkheight
+      /\
+      In (h,(bday,(obl,marker))) (f beta)))
 /\
 (*** newly claimed ownership must be new and must be supported by a document in the tx ***)
 (forall alpha b obl beta r,
-    In (alpha,(obl,owns b beta r)) (tx_outputs tx) ->
-    ((exists h beta' bday' obl' r', In (h,(bday',(obl',owns b beta' r'))) (f alpha)
-                             /\ In (alpha,h) (tx_inputs tx))
+    In (termaddr_addr alpha,(obl,owns b beta r)) (tx_outputs tx) ->
+    ((exists h beta' bday' obl' r', In (h,(bday',(obl',owns b beta' r'))) (f (termaddr_addr alpha))
+                             /\ In (termaddr_addr alpha,h) (tx_inputs tx))
      \/
-     ((~exists h beta' bday' obl' r', In (h,(bday',(obl',owns b beta' r'))) (f alpha))
+     ((~exists h beta' bday' obl' r', In (h,(bday',(obl',owns b beta' r'))) (f (termaddr_addr alpha)))
       /\
-      In alpha (output_uses b (tx_outputs tx)))))
+      exists k1 k2,
+        In (k1,k2) (output_creates b (tx_outputs tx))
+        /\
+        alpha = hashval_termaddr k1)))
 /\
 (*** new objects and props must be given ownership by the tx publishing the document ***)
-(forall alpha b,
-   In alpha (output_uses b (tx_outputs tx)) ->
-   ~(exists h' beta' bday' obl' r', In (h',(bday',(obl',owns true beta' r'))) (f alpha)) ->
-   exists beta obl r, In (alpha,(obl,owns b beta r)) (tx_outputs tx))
+(forall k1 k2 b,
+   In (k1,k2) (output_creates b (tx_outputs tx)) ->
+   ~(exists h' beta' bday' obl' r', In (h',(bday',(obl',owns b beta' r'))) (f (hashval_term_addr k1))) ->
+  (exists beta obl r, In (hashval_term_addr k1,(obl,owns b beta r)) (tx_outputs tx))
+  /\
+  (if b then
+     (exists obl2 obl3,
+        In (hashval_term_addr (hashpair k1 k2),(obl2,marker)) (tx_outputs tx) (*** record the prop with this proof ***)
+        /\
+        In (hashval_term_addr k1,(obl3,marker)) (tx_outputs tx)) (*** record that the prop is provable ***)
+   else
+     exists obl2,
+       In (hashval_term_addr (hashpair k1 k2),(obl2,marker)) (tx_outputs tx))) (*** record that the trm has the tp ***)
 /\
 (*** 
  Bounties can be collected by the owners of props.
@@ -230,8 +281,9 @@ unfold tx_statefun_trans. split.
       }
 Qed.
 
-Lemma statefun_supports_tx_assets_In blkheight (f:statefun) (tx:Tx) fee rew alpha h :
-  statefun_supports_tx blkheight f tx fee rew ->
+Lemma statefun_supports_tx_assets_In (tht:option (ttree 160)) (sigt:option (stree 160))
+      blkheight (f:statefun) (tx:Tx) fee rew alpha h :
+  statefun_supports_tx tht sigt blkheight f tx fee rew ->
   In (alpha,h) (tx_inputs tx) -> exists obl u, In (h,(obl,u)) (f alpha).
 intros [[utot [H _]] _]. destruct tx as [inpl outpl].
 simpl in *|-*.
@@ -248,24 +300,28 @@ induction H as [|k [k' [obl' u']] u inpl beta v H1 IH H2 H3 H4|k [k' [obl' u']] 
 Qed.
 
 (*** Ownership can only be created or transferred, so that there is at most one owner. ***)
-Lemma statefun_supports_tx_owns_trans blkheight (f:statefun) (tx:Tx) fee rew :
+Lemma statefun_supports_tx_owns_trans (tht:option (ttree 160)) (sigt:option (stree 160))
+      blkheight (f:statefun) (tx:Tx) fee rew :
   sf_valid f ->
-  statefun_supports_tx blkheight f tx fee rew ->
+  tx_valid blkheight tx ->
+  statefun_supports_tx tht sigt blkheight f tx fee rew ->
   forall alpha b obl beta u h bday' obl' gamma v, In (alpha,(obl,owns b beta u)) (tx_outputs tx) -> In (h,(bday',(obl',owns b gamma v))) (f alpha) -> In (alpha,h) (tx_inputs tx).
-intros Hf [_ [_ [_ [Hs5 _]]]] alpha b obl beta u h bday' obl' gamma v H1 H2.
+intros Hf [_ [_ [Htxo2 _]]] [_ [_ [_ [Hs5 _]]]] alpha b obl beta u h bday' obl' gamma v H1 H2.
+generalize (Htxo2 alpha obl b beta u H1). intros Ho2a.
+destruct alpha as [[|] [[|] alpha]]; try contradiction Ho2a.
 destruct (Hs5 alpha b obl beta u H1) as [[k [beta' [bday2 [obl2 [w [H3 H4]]]]]]|[H3 H4]].
 - destruct Hf as [_ [_ [_ [_ Hf5]]]].
-  destruct (Hf5 alpha _ _ _ _ _ _ _ _ _ _ _ H2 H3) as [H5 _].
+  destruct (Hf5 (true,(false,alpha)) _ _ _ _ _ _ _ _ _ _ _ H2 H3) as [H5 _].
   subst k. exact H4.
 - exfalso. apply H3. exists h. exists gamma. exists bday'. exists obl'. exists v.
   exact H2.
 Qed.
 
 (*** We need to know the tx has at least one input to ensure all its txouts are fresh. ***)
-Lemma sf_tx_valid_fresh_lem blkheight (f:statefun) (tx:Tx) fee rew :
+Lemma sf_tx_valid_fresh_lem tht sigt blkheight (f:statefun) (tx:Tx) fee rew :
   sf_valid f ->
   tx_inputs_valid (tx_inputs tx) ->
-  statefun_supports_tx blkheight f tx fee rew ->
+  statefun_supports_tx tht sigt blkheight f tx fee rew ->
   forall i alpha, ~In_dom (hashpair (hashtx tx) (hashnat i)) (f alpha).
 destruct tx as [[|[beta hin] inpl] outpl].
 - intros _ [Ht2 _]. exfalso. simpl in Ht2. congruence.
@@ -277,7 +333,7 @@ destruct tx as [[|[beta hin] inpl] outpl].
     * now left.
   + exists beta. apply In_In_dom_lem.
     assert (L1: exists obl u, In (hin, (obl,u)) (f beta)).
-    { apply (statefun_supports_tx_assets_In _ _ _ _ _ _ _ Hs).
+    { apply (statefun_supports_tx_assets_In _ _ _ _ _ _ _ _ _ Hs).
       simpl. now left.
     }
     destruct L1 as [obl [u H2]].
@@ -285,10 +341,10 @@ destruct tx as [[|[beta hin] inpl] outpl].
 Qed.
 
 (*** We need to know the tx has at least one input to ensure all its txouts did not occur as previous spent txs. ***)
-Lemma sf_tx_valid_not_spent_lem blkheight (f:statefun) (tx:Tx) fee rew :
+Lemma sf_tx_valid_not_spent_lem tht sigt blkheight (f:statefun) (tx:Tx) fee rew :
   sf_valid f ->
   tx_inputs_valid (tx_inputs tx) ->
-  statefun_supports_tx blkheight f tx fee rew ->
+  statefun_supports_tx tht sigt blkheight f tx fee rew ->
   forall i, ~ sf_spent f (hashpair (hashtx tx) (hashnat i)).
 destruct tx as [[|[beta hin] inpl] outpl].
 - intros _ [Ht2 _]. exfalso. simpl in Ht2. congruence.
@@ -300,7 +356,7 @@ destruct tx as [[|[beta hin] inpl] outpl].
     * now left.
   + exists beta. apply In_In_dom_lem.
     assert (L1: exists obl u, In (hin, (obl,u)) (f beta)).
-    { apply (statefun_supports_tx_assets_In _ _ _ _ _ _ _ Hs).
+    { apply (statefun_supports_tx_assets_In _ _ _ _ _ _ _ _ _ Hs).
       simpl. now left.
     }
     destruct L1 as [obl [u H2]].
@@ -308,12 +364,12 @@ destruct tx as [[|[beta hin] inpl] outpl].
 Qed.
 
 (** If a txout h was spent in the transformed state, then it was either already spent or was one of the inputs of the new tx. ***)
-Lemma sf_tx_valid_spent_lem bday inpl outpl f h fee rew :
-  tx_inputs_valid inpl ->
-  statefun_supports_tx bday f (inpl,outpl) fee rew ->
+Lemma sf_tx_valid_spent_lem tht sigt bday inpl outpl f h fee rew :
+  tx_valid bday (inpl,outpl) ->
+  statefun_supports_tx tht sigt bday f (inpl,outpl) fee rew ->
   sf_spent (tx_statefun_trans bday (inpl, outpl) f) h ->
   sf_spent f h \/ exists alpha, In (alpha,h) inpl.
-intros Ht Hs H.
+intros Htx Hs H. generalize Htx. intros [Ht _].
 induction H as [h inpl' outpl' i alpha [beta H1] H2|h inpl' outpl' i alpha H1 IH1 H2].
 - apply In_In_dom_lem in H1. destruct H1 as [u H1].
   apply in_app_iff in H1. destruct H1 as [H1|H1].
@@ -334,17 +390,17 @@ induction H as [h inpl' outpl' i alpha [beta H1] H2|h inpl' outpl' i alpha H1 IH
     * assumption.
 - left. destruct IH1 as [H3|[beta H3]].
   + now apply (sf_spent_R f h inpl' outpl' i alpha).
-  + apply (statefun_supports_tx_assets_In _ _ _ _ _ _ _ Hs) in H3.
+  + apply (statefun_supports_tx_assets_In _ _ _ _ _ _ _ _ _ Hs) in H3.
     destruct H3 as [obl [u H3]].
     apply (sf_spent_1 f h inpl' outpl' i alpha).
     * exists beta. apply In_In_dom_lem_2 in H3. assumption.
     * assumption.
 Qed.
 
-Theorem sf_tx_valid_thm bday (f:statefun) (tx:Tx) fee rew :
+Theorem sf_tx_valid_thm tht sigt bday (f:statefun) (tx:Tx) fee rew :
   sf_valid f ->
   tx_valid bday tx ->
-  statefun_supports_tx bday f tx fee rew ->
+  statefun_supports_tx tht sigt bday f tx fee rew ->
   sf_valid (tx_statefun_trans bday tx f).
 intros Hf Ht Hs.
 destruct tx as [inpl outpl]. generalize Hf Ht. simpl.
@@ -355,7 +411,7 @@ intros [Hf1 [Hf2 [Hf3 [Hf4 Hf5]]]] [Ht2 Ht3]. split.
   + intros [h [obl u]] H1 H2.
     apply new_assets_iff in H1. apply remove_assets_iff in H2.
     destruct H1 as [Hb [j [H3 H4]]]. destruct H2 as [H5 H6].
-    apply (sf_tx_valid_fresh_lem bday f (inpl,outpl) fee rew Hf Ht2 Hs j alpha).
+    apply (sf_tx_valid_fresh_lem tht sigt bday f (inpl,outpl) fee rew Hf Ht2 Hs j alpha).
     apply In_In_dom_lem. exists (obl,u).
     change (h = hashpair (hashtx (inpl, outpl)) (hashnat j)) in H4.
     rewrite H4 in H5. exact H5.
@@ -386,7 +442,7 @@ intros [Hf1 [Hf2 [Hf3 [Hf4 Hf5]]]] [Ht2 Ht3]. split.
       apply remove_assets_iff in H2. destruct H2 as [H5 H6].
       change (~ In h (get_spent alpha' inpl)) in H6.
       apply In_In_dom_lem_2 in H5. revert H5.
-      rewrite H4. apply (sf_tx_valid_fresh_lem bday f (inpl,outpl) fee rew Hf Ht2 Hs).
+      rewrite H4. apply (sf_tx_valid_fresh_lem tht sigt bday f (inpl,outpl) fee rew Hf Ht2 Hs).
     * exfalso.
       apply remove_assets_iff in H1. destruct H1 as [H3 H4].
       change (~ In h (get_spent alpha inpl)) in H4.
@@ -394,7 +450,7 @@ intros [Hf1 [Hf2 [Hf3 [Hf4 Hf5]]]] [Ht2 Ht3]. split.
       change (nth_error outpl j = value (alpha', (obl',u'))) in H5.
       change (h = hashpair (hashtx (inpl, outpl)) (hashnat j)) in H6.
       apply In_In_dom_lem_2 in H3. revert H3.
-      rewrite H6. apply (sf_tx_valid_fresh_lem bday f (inpl,outpl) fee rew Hf Ht2 Hs).
+      rewrite H6. apply (sf_tx_valid_fresh_lem tht sigt bday f (inpl,outpl) fee rew Hf Ht2 Hs).
     * apply remove_assets_iff in H1. destruct H1 as [H3 H4].
       apply remove_assets_iff in H2. destruct H2 as [H5 H6].
       change (~ In h (get_spent alpha inpl)) in H4.
@@ -416,20 +472,20 @@ intros [Hf1 [Hf2 [Hf3 [Hf4 Hf5]]]] [Ht2 Ht3]. split.
           apply in_app_iff in H2. destruct H2 as [H2|H2].
           + apply new_assets_iff in H2. destruct H2 as [Hb2 [j [H3 H4]]].
             simpl in H3, H4.
-            destruct (sf_tx_valid_spent_lem bday inpl outpl f h fee rew Ht2 Hs H1) as [H5|[beta H5]].
+            destruct (sf_tx_valid_spent_lem tht sigt bday inpl outpl f h fee rew Ht Hs H1) as [H5|[beta H5]].
             * revert H5. rewrite H4.
-              apply (sf_tx_valid_not_spent_lem bday f (inpl,outpl) fee rew Hf Ht2 Hs).
+              apply (sf_tx_valid_not_spent_lem tht sigt bday f (inpl,outpl) fee rew Hf Ht2 Hs).
             * apply (hashtx_notin_inpl beta inpl outpl j).
               simpl. rewrite <- H4. exact H5.
           + apply remove_assets_iff in H2. destruct H2 as [H3 H4].
             assert (L1: sf_unsp_txout f h).
             { exists alpha. apply In_In_dom_lem_2 in H3. assumption. }
             revert L1. apply Hf4.
-            destruct (sf_tx_valid_spent_lem bday inpl outpl f h fee rew Ht2 Hs H1) as [H5|[beta H5]].
+            destruct (sf_tx_valid_spent_lem tht sigt bday inpl outpl f h fee rew Ht Hs H1) as [H5|[beta H5]].
             * assumption.
             * exfalso. apply H4. apply get_spent_iff. simpl.
               assert (L2: alpha = beta).
-              { destruct (statefun_supports_tx_assets_In bday f (inpl,outpl) fee rew beta h Hs H5) as [obl' [v H6]].
+              { destruct (statefun_supports_tx_assets_In tht sigt bday f (inpl,outpl) fee rew beta h Hs H5) as [obl' [v H6]].
                 generalize (Hf2 h alpha u beta (obl',v) H3 H6). tauto.
               }
               congruence.
@@ -440,9 +496,9 @@ intros [Hf1 [Hf2 [Hf3 [Hf4 Hf5]]]] [Ht2 Ht3]. split.
             destruct H2 as [[H2a H2b]|[Hb2 [i' [H2a H2b]]]].
           * now apply (Hf5 alpha b).
           * exfalso. apply H1b. apply nth_error_In in H2a.
-            exact (statefun_supports_tx_owns_trans _ _ _ _ _ Hf Hs alpha b _ _ _ _ _ _ _ _ H2a H1a).
+            exact (statefun_supports_tx_owns_trans tht sigt _ _ _ _ _ Hf Ht Hs alpha b _ _ _ _ _ _ _ _ H2a H1a).
           * exfalso. apply H2b. apply nth_error_In in H1a.
-            exact (statefun_supports_tx_owns_trans _ _ _ _ _ Hf Hs alpha b _ _ _ _ _ _ _ _ H1a H2a).
+            exact (statefun_supports_tx_owns_trans tht sigt _ _ _ _ _ Hf Ht Hs alpha b _ _ _ _ _ _ _ _ H1a H2a).
           * { assert (L1: i = i' /\ obl = obl' /\ u = u' /\ beta = beta').
               { destruct Ht3 as [Ht3a _].
                 now apply (Ht3a alpha) with (b := b). }
@@ -561,10 +617,10 @@ Qed.
 
 Opaque statefun_totalassets.
 
-Lemma totalassets_trans_iff m (f:statefun) (tx:Tx) fee rew :
+Lemma totalassets_trans_iff tht sigt m (f:statefun) (tx:Tx) fee rew :
  sf_valid f ->
  tx_valid m tx ->
- statefun_supports_tx m f tx fee rew ->
+ statefun_supports_tx tht sigt m f tx fee rew ->
  forall h bday obl u,
    In (h,(bday,(obl,u))) (statefun_totalassets (tx_statefun_trans m tx f)) <->
    ((In (h,(bday,(obl,u))) (statefun_totalassets f) /\ ~exists alpha, In (alpha,h) (tx_inputs tx))
@@ -585,7 +641,7 @@ intros Hf Ht Hs. destruct tx as [inpl outpl]. intros h bday obl u. split.
     * intros [beta H7]. simpl in H7. apply H6.
       apply get_spent_iff. simpl.
       assert (L1: alpha = beta).
-      { destruct (statefun_supports_tx_assets_In m f (inpl,outpl) fee rew beta h Hs H7) as [obl' [v H8]].
+      { destruct (statefun_supports_tx_assets_In tht sigt m f (inpl,outpl) fee rew beta h Hs H7) as [obl' [v H8]].
         destruct Hf as [_ [Hf2 _]].
         destruct (Hf2 h alpha (bday,(obl,u)) beta (obl',v) H5 H8) as [H9 _].
         exact H9.
@@ -940,11 +996,11 @@ induction H as [|h a u inpl alpha v H1 IH1 H2|h a inpl alpha v H1 IH1 H2 H3].
   omega.
 Qed.
 
-Theorem totalunits_bdd m (f:statefun) (tx:Tx) (fee rew:nat) :
+Theorem totalunits_bdd tht sigt m (f:statefun) (tx:Tx) (fee rew:nat) :
  sf_valid f ->
  tx_valid m tx ->
- statefun_supports_tx m f tx fee rew ->
- statefun_totalunits (tx_statefun_trans m tx f) + fee = statefun_totalunits f + rew.
+ statefun_supports_tx tht sigt m f tx fee rew ->
+ statefun_totalunits (tx_statefun_trans m tx f) + fee + out_burncost (tx_outputs tx) = statefun_totalunits f + rew.
 intros Hf Ht Hs. generalize Hs. intros [[utot [H1 H2]] _].
 unfold statefun_totalunits at 1. unfold tx_statefun_trans.
 generalize (sf_totalassets_app_iff (fun alpha => new_assets m alpha (tx_outputs tx) (hashtx tx) 0) (fun alpha => remove_assets (f alpha) (get_spent alpha (tx_inputs tx)))).
@@ -962,7 +1018,7 @@ change ((statefun_totalunits
             new_assets m alpha (tx_outputs tx) (hashtx tx) 0)) +
         (statefun_totalunits
            (fun alpha : addr =>
-              remove_assets (f alpha) (get_spent alpha (tx_inputs tx)))) + fee =
+              remove_assets (f alpha) (get_spent alpha (tx_inputs tx)))) + fee + out_burncost (tx_outputs tx) =
    statefun_totalunits f + rew).
 rewrite sf_totalunits_new_assets.
 assert (L1:utot + (statefun_totalunits
@@ -973,7 +1029,7 @@ assert (L1:utot + (statefun_totalunits
   - exact Hf.
   - destruct tx as [inpl outpl]. destruct Ht as [[Ht1a _] _].
     simpl. intros h alpha H3.
-    destruct (statefun_supports_tx_assets_In m f (inpl,outpl) fee rew alpha h Hs H3) as [obl' [v H4]].
+    destruct (statefun_supports_tx_assets_In tht sigt m f (inpl,outpl) fee rew alpha h Hs H3) as [obl' [v H4]].
     exists (obl',v). exact H4.
   - destruct tx as [inpl outpl]. destruct Ht as [[_ Ht2b] _]. exact Ht2b.
   - exact H1.
