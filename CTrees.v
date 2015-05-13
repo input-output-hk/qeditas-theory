@@ -3631,6 +3631,24 @@ exists k. exists bday. exists obl. revert H2.
 apply subqc_supports_asset. exact H1.
 Qed.
 
+Lemma subqc_check_signaspec_p (T1 T2:ctree 162) tht sigt th d :
+  subqc T1 T2 ->
+  check_signaspec_p (ctree_lookup_stp T1) (ctree_lookup_known T1) tht sigt th d ->
+  check_signaspec_p (ctree_lookup_stp T2) (ctree_lookup_known T2) tht sigt th d.
+intros H1. apply check_signaspec_p_subq.
+- intros h a. revert H1. apply subqc_lookup_stp.
+- intros h. revert H1. apply subqc_lookup_known.
+Qed.
+
+Lemma subqc_check_doc_p (T1 T2:ctree 162) tht sigt th d :
+  subqc T1 T2 ->
+  check_doc_p (ctree_lookup_stp T1) (ctree_lookup_known T1) tht sigt th d ->
+  check_doc_p (ctree_lookup_stp T2) (ctree_lookup_known T2) tht sigt th d.
+intros H1. apply check_doc_p_subq.
+- intros h a. revert H1. apply subqc_lookup_stp.
+- intros h. revert H1. apply subqc_lookup_known.
+Qed.
+
 Theorem subqc_supports_tx tht sigt m tx (T1 T2:ctree 162) fee rew :
   ctree_valid T2 ->
   subqc T1 T2 ->
@@ -3693,9 +3711,7 @@ split.
         - intros obl gamma nonce th d alpha H1.
           destruct (Hs5b obl gamma nonce th d alpha H1) as [Hch [beta [h [bday' [obl' [H2 [H3 [H4 H5]]]]]]]].
           split.
-          + revert Hch. apply check_signaspec_p_subq.
-            * intros h' a'. apply subqc_lookup_stp. exact H0.
-            * intros h'. apply subqc_lookup_known. exact H0.
+          + revert Hch. apply subqc_check_signaspec_p. exact H0.
           + exists beta. exists h. exists bday'. exists obl'. repeat split.
             * exact H2.
             * exact H3.
@@ -3704,9 +3720,7 @@ split.
         - intros obl gamma nonce th d alpha H1.
           destruct (Hs5c obl gamma nonce th d alpha H1) as [Hch [beta [h [bday' [obl' [H2 [H3 [H4 H5]]]]]]]].
           split.
-          + revert Hch. apply check_doc_p_subq.
-            * intros h' a'. apply subqc_lookup_stp. exact H0.
-            * intros h'. apply subqc_lookup_known. exact H0.
+          + revert Hch. apply subqc_check_doc_p. exact H0.
           + exists beta. exists h. exists bday'. exists obl'. repeat split.
             * exact H2.
             * exact H3.

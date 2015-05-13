@@ -214,7 +214,9 @@ Inductive signaitem : Type :=
 (*** A signature is given as a stack of declarations. The first to be checked is at the end of the list. ***)
 Definition signaspec : Type := list signaitem.
 
-Definition signa : Type := prod (list (prod hashval (prod stp (option trm)))) (list hashval).
+Definition gsigna : Type := prod (list (prod hashval (prod stp (option trm)))) (list hashval).
+
+Definition signa : Type := prod (list hashval) gsigna.
 
 Definition ser_signaitem (d : signaitem) : list nat :=
 match d with
@@ -249,7 +251,7 @@ Fixpoint signaspec_hashroot (th:option hashval) (dl : signaspec) : hashval :=
     | signaknown p::dr => hashpair (hashnat 41) (hashpair (trm_hashroot th p) (signaspec_hashroot th dr))
   end.
 
-Definition hashsigna (th:option hashval) (s : signa) : hashval :=
+Definition hashgsigna (th:option hashval) (s : gsigna) : hashval :=
   match s with
     | (tl',kl) => hashpair (hashlist (map (fun z =>
                                             match z with
@@ -260,29 +262,35 @@ Definition hashsigna (th:option hashval) (s : signa) : hashval :=
                           (hashlist kl)
   end.
 
-Fixpoint signaspec_trms (l:hashval -> signa) (th:option hashval) (s:signaspec) : list (prod hashval (prod stp (option trm))) :=
+Definition hashsigna (th:option hashval) (s : signa) : hashval :=
   match s with
-    | nil => nil
-    | signasigna h::s =>
-      let (tl',_) := l h in
-      tl' ++ signaspec_trms l th s
-    | signaparam h a::s => (h,(a,None))::signaspec_trms l th s
-    | signadef a m::s => (trm_hashroot th m,(a,Some(m)))::signaspec_trms l th s
-    | _::s => signaspec_trms l th s
+    | (sl,(tl',kl)) => hashpair (hashlist sl) (hashgsigna th (tl',kl))
   end.
 
-Fixpoint signaspec_knowns (l:hashval -> signa) (th:option hashval) (s:signaspec) : list hashval :=
+Fixpoint signaspec_trms (th:option hashval) (s:signaspec) : list (prod hashval (prod stp (option trm))) :=
   match s with
     | nil => nil
-    | signasigna h::s =>
-      let (_,kl) := l h in
-      kl ++ signaspec_knowns l th s
-    | signaknown p::s => trm_hashroot th p::signaspec_knowns l th s
-    | _::s => signaspec_knowns l th s
+    | signaparam h a::s => (h,(a,None))::signaspec_trms th s
+    | signadef a m::s => (trm_hashroot th m,(a,Some(m)))::signaspec_trms th s
+    | _::s => signaspec_trms th s
   end.
 
-Definition signaspec_signa (l:hashval -> signa) (th:option hashval) (s:signaspec) : signa :=
-(signaspec_trms l th s,signaspec_knowns l th s).
+Fixpoint signaspec_knowns (th:option hashval) (s:signaspec) : list hashval :=
+  match s with
+    | nil => nil
+    | signaknown p::s => trm_hashroot th p::signaspec_knowns th s
+    | _::s => signaspec_knowns th s
+  end.
+
+Fixpoint signaspec_signas (s:signaspec) : list hashval :=
+  match s with
+    | nil => nil
+    | signasigna h::s => h::signaspec_signas s
+    | _::s => signaspec_signas s
+  end.
+
+Definition signaspec_signa (th:option hashval) (s:signaspec) : signa :=
+(signaspec_signas s,(signaspec_trms th s,signaspec_knowns th s)).
 
 (*** Documents ***)
 Inductive docitem : Type :=
@@ -333,6 +341,16 @@ end.
 
 Definition doc_hashroot (th:option hashval) (dl : doc) : hashval := hashlist (map (docitem_hashroot th) dl).
 
+Lemma doc_hashroot_nil_eq th :
+  doc_hashroot th nil = hashnat 0.
+reflexivity.
+Qed.
+
+Lemma doc_hashroot_cons_eq th d dl :
+  doc_hashroot th (d::dl) = hashpair (docitem_hashroot th d) (doc_hashroot th dl).
+reflexivity.
+Qed.
+
 Lemma ser_stp_inj_lem a a' l l' : ser_stp a ++ l = ser_stp a' ++ l' -> l = l' /\ a = a'.
 revert a' l l'. induction a as [| |n|a IHa b IHb]; intros [| |n'|a' b'] l l' H1; simpl in H1;
            try now (exfalso; inversion H1).
@@ -377,6 +395,302 @@ revert al' l l'. induction al as [|a al IH]; intros [|a' al'] l l' H1; simpl in 
   destruct (ser_stp_inj_lem a a' _ _ H0) as [H2 H3].
   apply IH in H2. destruct H2 as [H4 H5].
   split; congruence.
+Qed.
+
+Inductive partialdoc : Type :=
+| pdoc_nil : partialdoc
+| pdoc_hash : hashval -> partialdoc
+| pdoc_signa : hashval -> partialdoc -> partialdoc
+| pdoc_param : hashval -> stp -> partialdoc -> partialdoc
+| pdoc_param_hash : hashval -> partialdoc -> partialdoc
+| pdoc_def : stp -> trm -> partialdoc -> partialdoc
+| pdoc_def_hash : hashval -> partialdoc -> partialdoc
+| pdoc_known : trm -> partialdoc -> partialdoc
+| pdoc_pfof : trm -> pf -> partialdoc -> partialdoc
+| pdoc_pfof_hash : hashval -> partialdoc -> partialdoc
+.
+
+Fixpoint partialdoc_hashroot (th:option hashval) (d : partialdoc) : hashval :=
+match d with
+| pdoc_nil => hashnat 0
+| pdoc_hash h => h
+| pdoc_signa h dr => hashpair (hashpair (hashnat 49) h) (partialdoc_hashroot th dr)
+| pdoc_param h a dr => hashpair (hashpair (hashnat 50) (hashpair h (hashstp a))) (partialdoc_hashroot th dr)
+| pdoc_param_hash h dr => hashpair (hashpair (hashnat 50) h) (partialdoc_hashroot th dr)
+| pdoc_def a m dr => hashpair (hashpair (hashnat 51) (hashpair (hashstp a) (trm_hashroot th m))) (partialdoc_hashroot th dr)
+| pdoc_def_hash h dr => hashpair (hashpair (hashnat 51) h) (partialdoc_hashroot th dr)
+| pdoc_known p dr => hashpair (hashpair (hashnat 52) (trm_hashroot th p)) (partialdoc_hashroot th dr)
+| pdoc_pfof p d dr => hashpair (hashpair (hashnat 53) (hashpair (trm_hashroot th p) (pf_hashroot th d))) (partialdoc_hashroot th dr)
+| pdoc_pfof_hash h dr => hashpair (hashpair (hashnat 53) h) (partialdoc_hashroot th dr)
+end.
+
+Inductive doc_approx (th:option hashval) : partialdoc -> doc -> Prop :=
+| doc_approx_nil : doc_approx th pdoc_nil nil
+| doc_approx_hash h d : doc_hashroot th d = h -> doc_approx th (pdoc_hash h) d
+| doc_approx_signa h dr dr': doc_approx th dr dr' -> doc_approx th (pdoc_signa h dr) (docsigna h::dr')
+| doc_approx_param h a dr dr' : doc_approx th dr dr' -> doc_approx th (pdoc_param h a dr) (docparam h a::dr')
+| doc_approx_param_hash h a dr dr' : doc_approx th dr dr' -> doc_approx th (pdoc_param_hash (hashpair h (hashstp a)) dr) (docparam h a::dr')
+| doc_approx_def a m m' dr dr' : trm_hashroot th m = trm_hashroot th m' -> doc_approx th dr dr' -> doc_approx th (pdoc_def a m dr) (docdef a m'::dr')
+| doc_approx_def_hash a m dr dr' : doc_approx th dr dr' -> doc_approx th (pdoc_def_hash (hashpair (hashstp a) (trm_hashroot th m)) dr) (docdef a m::dr')
+| doc_approx_known p p' dr dr' : trm_hashroot th p = trm_hashroot th p' -> doc_approx th dr dr' -> doc_approx th (pdoc_known p dr) (docknown p'::dr')
+| doc_approx_pfof p d p' d' dr dr' : trm_hashroot th p = trm_hashroot th p' -> pf_hashroot th d = pf_hashroot th d' -> doc_approx th dr dr' -> doc_approx th (pdoc_pfof p d dr) (docpfof p' d'::dr')
+| doc_approx_pfof_hash p d dr dr' : doc_approx th dr dr' -> doc_approx th (pdoc_pfof_hash (hashpair (trm_hashroot th p) (pf_hashroot th d)) dr) (docpfof p d::dr')
+.
+
+Lemma doc_approx_hashroot_eq th dl dl' :
+  doc_approx th dl dl' <-> partialdoc_hashroot th dl = doc_hashroot th dl'.
+split.
+- intros H1. induction H1.
+  + simpl. reflexivity.
+  + simpl. congruence.
+  + simpl. rewrite IHdoc_approx. reflexivity.
+  + simpl. rewrite IHdoc_approx. reflexivity.
+  + simpl. rewrite IHdoc_approx. reflexivity.
+  + simpl. rewrite IHdoc_approx. rewrite doc_hashroot_cons_eq. simpl. congruence.
+  + simpl. rewrite IHdoc_approx. rewrite doc_hashroot_cons_eq. simpl. congruence.
+  + simpl. rewrite IHdoc_approx. rewrite doc_hashroot_cons_eq. simpl. congruence.
+  + simpl. rewrite IHdoc_approx. rewrite doc_hashroot_cons_eq. simpl. congruence.
+  + simpl. rewrite IHdoc_approx. rewrite doc_hashroot_cons_eq. simpl. congruence.
+- revert dl'. induction dl; intros [|[h'|h' a'|a' m'|p'|p' d'] dr'];
+              try now (simpl; intros H1; exfalso; revert H1; apply hashnatpairdiscr).
+  + intros _. apply doc_approx_nil.
+  + simpl. intros H1. apply doc_approx_hash. congruence.
+  + simpl. intros H1. apply doc_approx_hash. congruence.
+  + simpl. intros H1. apply doc_approx_hash. congruence.
+  + simpl. intros H1. apply doc_approx_hash. congruence.
+  + simpl. intros H1. apply doc_approx_hash. congruence.
+  + simpl. intros H1. apply doc_approx_hash. congruence.
+  + simpl. intros H1. exfalso. symmetry in H1. revert H1. apply hashnatpairdiscr.
+  + simpl. intros H1. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [_ H2]. subst h'.
+    apply doc_approx_signa. apply IHdl. exact H3.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_nil_eq in H1.
+    symmetry in H1. revert H1. apply hashnatpairdiscr.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [_ H2].
+    apply hashpairinj in H2. destruct H2 as [H4 H5].
+    apply hashstpinj in H5. subst s. subst h.
+    apply doc_approx_param. apply IHdl. exact H3.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_nil_eq in H1.
+    symmetry in H1. revert H1. apply hashnatpairdiscr.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [_ H2]. subst h.
+    apply doc_approx_param_hash. apply IHdl. exact H3.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_nil_eq in H1.
+    symmetry in H1. revert H1. apply hashnatpairdiscr.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [_ H2].
+    apply hashpairinj in H2. destruct H2 as [H4 H5].
+    apply hashstpinj in H4. subst s.
+    apply doc_approx_def.
+    * exact H5.
+    * apply IHdl. exact H3.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_nil_eq in H1.
+    symmetry in H1. revert H1. apply hashnatpairdiscr.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [_ H2].
+    subst h.
+    apply doc_approx_def_hash.
+    apply IHdl. exact H3.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_nil_eq in H1.
+    symmetry in H1. revert H1. apply hashnatpairdiscr.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [_ H2].
+    apply doc_approx_known.
+    * assumption.
+    * apply IHdl. exact H3.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_nil_eq in H1.
+    symmetry in H1. revert H1. apply hashnatpairdiscr.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [_ H2].
+    apply hashpairinj in H2. destruct H2 as [H4 H5].
+    apply doc_approx_pfof.
+    * exact H4.
+    * exact H5.
+    * apply IHdl. exact H3.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_nil_eq in H1.
+    symmetry in H1. revert H1. apply hashnatpairdiscr.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. exfalso. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [H2 _].
+    apply hashnatinj in H2. omega.
+  + simpl. intros H1. rewrite doc_hashroot_cons_eq in H1.
+    apply hashpairinj in H1.
+    destruct H1 as [H2 H3].
+    simpl in H2. apply hashpairinj in H2. destruct H2 as [_ H2].
+    subst h.
+    apply doc_approx_pfof_hash.
+    apply IHdl. exact H3.
 Qed.
 
 Lemma ser_trm_inj_lem m m' l l' : ser_trm m ++ l = ser_trm m' ++ l' -> l = l' /\ m = m'.
@@ -897,7 +1211,7 @@ Definition theory_lookup {n} (h:bitseq n) (t:ttree n) : theory :=
 Definition signa_lookup {n} (bs:bitseq n) (t:stree n) : option hashval * signa :=
   match htree_lookup bs t with
     | Some(th,s) => (th,s)
-    | None => (None,(nil,nil))
+    | None => (None,(nil,(nil,nil)))
   end.
 
 Definition ottree_insert {n} (t:option (ttree n)) (bs:bitseq n) (thy:theory) : ttree n :=
@@ -942,17 +1256,6 @@ Parameter check_trm_tp_p : option hashval -> theory -> signa -> trm -> stp -> Pr
 
 Parameter check_pf_prop_p : option hashval -> theory -> signa -> pf -> trm -> Prop.
 
-(*** Instantiate signaspec_signa using an stree to lookup imported signas ***)
-Definition signaspec_stree_signa (st:option (stree 160)) (th:option hashval) (s:signaspec) : signa :=
-  signaspec_signa (fun h => match st with
-                              | None => (nil,nil)
-                              | Some(st) =>
-                                match signa_lookup (hashval_bit160 h) st with
-                                  | (_,s) => s
-                                end
-                            end)
-                  th s.
-  
 (***
  gvtp is a generic way of verifying the term with a certain hashval has a certain stp
  and gvkn is a generic way of verifying the prop with a certain hashval is known.
@@ -975,7 +1278,7 @@ Fixpoint check_signaspec_r (gvtp : hashval -> stp -> Prop) (gvkn : hashval -> Pr
            end
        end
      | signaparam h a::s => check_signaspec_r gvtp gvkn st th thy s /\ gvtp h a
-     | signadef a m::s => check_signaspec_r gvtp gvkn st th thy s /\ check_trm_tp_p th thy (signaspec_stree_signa st th s) m a
+     | signadef a m::s => check_signaspec_r gvtp gvkn st th thy s /\ check_trm_tp_p th thy (signaspec_signa th s) m a
      | signaknown p::s => check_signaspec_r gvtp gvkn st th thy s /\ gvkn (trm_hashroot th p)
    end.
 
@@ -990,40 +1293,31 @@ Definition check_signaspec_p (gvtp : hashval -> stp -> Prop) (gvkn : hashval -> 
       end
   end.
 
-Fixpoint doc_trms (l:hashval -> signa) (th:option hashval) (dl:doc) : list (prod hashval (prod stp (option trm))) :=
+Fixpoint doc_signas (dl:doc) : list hashval :=
   match dl with
     | nil => nil
-    | docsigna h::dr =>
-      let (tl',_) := l h in
-      tl' ++ doc_trms l th dr
-    | docparam h a::dr => (h,(a,None))::doc_trms l th dr
-    | docdef a m::dr => (trm_hashroot th m,(a,Some(m)))::doc_trms l th dr
-    | _::dr => doc_trms l th dr
+    | docsigna h::dr => h::doc_signas dr
+    | _::dr => doc_signas dr
   end.
 
-Fixpoint doc_knowns (l:hashval -> signa) (th:option hashval) (dl:doc) : list hashval :=
+Fixpoint doc_trms (th:option hashval) (dl:doc) : list (prod hashval (prod stp (option trm))) :=
   match dl with
     | nil => nil
-    | docsigna h::dr =>
-      let (_,kl) := l h in
-      kl ++ doc_knowns l th dr
-    | docknown p::dr => trm_hashroot th p::doc_knowns l th dr
-    | docpfof p _::dr => trm_hashroot th p::doc_knowns l th dr
-    | _::dr => doc_knowns l th dr
+    | docparam h a::dr => (h,(a,None))::doc_trms th dr
+    | docdef a m::dr => (trm_hashroot th m,(a,Some(m)))::doc_trms th dr
+    | _::dr => doc_trms th dr
   end.
 
-Definition doc_signa (l:hashval -> signa) (th:option hashval) (dl:doc) : signa :=
-(doc_trms l th dl,doc_knowns l th dl).
+Fixpoint doc_knowns (th:option hashval) (dl:doc) : list hashval :=
+  match dl with
+    | nil => nil
+    | docknown p::dr => trm_hashroot th p::doc_knowns th dr
+    | docpfof p _::dr => trm_hashroot th p::doc_knowns th dr
+    | _::dr => doc_knowns th dr
+  end.
 
-Definition doc_stree_signa (st:option (stree 160)) (th:option hashval) (dl:doc) : signa :=
-  doc_signa (fun h => match st with
-                        | None => (nil,nil)
-                        | Some(st) =>
-                          match signa_lookup (hashval_bit160 h) st with
-                            | (_,s) => s
-                          end
-                      end)
-            th dl.
+Definition doc_signa (th:option hashval) (dl:doc) : signa :=
+(doc_signas dl,(doc_trms th dl,doc_knowns th dl)).
 
 Fixpoint check_doc_r (gvtp : hashval -> stp -> Prop) (gvkn : hashval -> Prop)
          (st:option (stree 160)) (th:option hashval) (thy:theory) (dl:doc) : Prop :=
@@ -1038,9 +1332,9 @@ Fixpoint check_doc_r (gvtp : hashval -> stp -> Prop) (gvkn : hashval -> Prop)
            end
        end
      | docparam h a::dr => check_doc_r gvtp gvkn st th thy dr /\ gvtp h a
-     | docdef a m::dr => check_doc_r gvtp gvkn st th thy dr /\ check_trm_tp_p th thy (doc_stree_signa st th dr) m a
+     | docdef a m::dr => check_doc_r gvtp gvkn st th thy dr /\ check_trm_tp_p th thy (doc_signa th dr) m a
      | docknown p::dr => check_doc_r gvtp gvkn st th thy dr /\ gvkn (trm_hashroot th p)
-     | docpfof p d::dr => check_doc_r gvtp gvkn st th thy dr /\ check_pf_prop_p th thy (doc_stree_signa st th dr) d p
+     | docpfof p d::dr => check_doc_r gvtp gvkn st th thy dr /\ check_pf_prop_p th thy (doc_signa th dr) d p
    end.
 
 Definition check_doc_p (gvtp : hashval -> stp -> Prop) (gvkn : hashval -> Prop)
@@ -1289,3 +1583,111 @@ intros H1 H2. apply check_doc_p_uses.
 - intros h a _. apply H1.
 - intros h _. apply H2.
 Qed.
+
+(***
+ The next functions give the burncost for theories and signatures.
+ Creating theories and signatures should be done sparingly since they must be kept on every node to check future documents.
+ The real functions will give the number of cants based on the number of bytes required to serialize.
+ The current idea is that it will be such that 21 million fraenks must be burned to create 1GB of theories and signatures, and so there will be a hard upper bound of 1GB of theories and 1GB of signatures (just counting what is stored at the leaves).
+***)
+(*** 21 zerms per byte = 21 billion cants per byte ***)
+Parameter cants_per_byte : nat. (*** := 21000000000. Leave abstract here to avoid Coq trying to compute with it. The value doesn't matter here. ***)
+
+(***
+ These are simply estimates of the number of bytes required to represent the data serialized.
+ The way it's implemented in the real code will require more care.
+ ***)
+Definition stp_numbytes (a:stp) : nat := length (ser_stp a).
+
+Fixpoint stpl_numbytes (al:list stp) : nat :=
+  match al with
+    | nil => 0
+    | a::ar => stp_numbytes a + stpl_numbytes ar
+  end.
+
+Fixpoint trm_numbytes (m:trm) : nat :=
+  match m with
+    | Gn _ => 21
+    | Prm _ al => 1 + stpl_numbytes al
+    | Db _ => 1
+    | Ap m n => 1 + trm_numbytes m + trm_numbytes n
+    | La a m => 1 + stp_numbytes a + trm_numbytes m
+    | Imp m n => 1 + trm_numbytes m + trm_numbytes n
+    | All a m => 1 + stp_numbytes a + trm_numbytes m
+  end.
+
+Fixpoint odefl_numbytes (dl: list (prod hashval (prod stp (option trm)))) : nat :=
+  match dl with
+    | nil => 0
+    | (h,(a,None))::dr => stp_numbytes a + 21 + odefl_numbytes dr
+    | (h,(a,Some(m)))::dr => stp_numbytes a + trm_numbytes m + 21 + odefl_numbytes dr
+  end.
+
+Definition theory_burncost (thy:theory) : nat :=
+  let (al,kl) := thy in
+  cants_per_byte * stpl_numbytes al
+  +
+  cants_per_byte * 21 * length kl.
+
+Definition theoryspec_burncost (s:theoryspec) : nat := theory_burncost (theoryspec_theory s).
+
+Fixpoint signaspec_burncost (s:signaspec) : nat :=
+  match s with
+    | signasigna h::s => cants_per_byte * 21 + signaspec_burncost s
+    | signaparam h a::s => cants_per_byte * (stp_numbytes a + 21) + signaspec_burncost s
+    | signadef a m::s => cants_per_byte * (trm_numbytes m + stp_numbytes a + 21) + signaspec_burncost s
+    | signaknown p::s => cants_per_byte * 21 + signaspec_burncost s
+    | nil => 0
+  end.
+
+Definition signa_burncost (s:signa) : nat :=
+  match s with
+    | (sl,(dl,kl)) =>
+      length sl * cants_per_byte * 21
+      + 
+      odefl_numbytes dl * cants_per_byte
+      +
+      length kl * cants_per_byte * 21
+  end.
+
+Lemma signaspec_signa_burncost_eq (th:option hashval) (s:signaspec) :
+  signaspec_burncost s = signa_burncost (signaspec_signa th s).
+induction s as [|[h|h a|a m|p] sr IH].
+- simpl. omega.
+- simpl. rewrite IH. simpl. omega.
+- simpl. rewrite IH. simpl.
+  assert (L1: (stp_numbytes a + 21 + odefl_numbytes (signaspec_trms th sr)) * cants_per_byte = (stp_numbytes a + 21) * cants_per_byte + odefl_numbytes (signaspec_trms th sr) * cants_per_byte).
+  { apply mult_plus_distr_r. }
+  rewrite L1.
+  rewrite mult_comm.
+  omega.
+- simpl. rewrite IH. simpl. repeat rewrite mult_plus_distr_l. repeat rewrite mult_plus_distr_r.
+  rewrite (mult_comm 21). 
+  repeat rewrite (mult_comm cants_per_byte).
+  rewrite (mult_comm 21). 
+  omega.
+- simpl. rewrite IH. simpl. omega.
+Qed.
+
+Fixpoint htree_sum (A:Type) (f:A -> nat) (n:nat) : htree A n -> nat :=
+  match n with
+    | 0 => fun x:htree A 0 => f x
+    | S n => fun t:htree A (S n) => match t with
+                                      | (None,None) => 0
+                                      | (Some l,None) => htree_sum A f n l
+                                      | (None,Some r) => htree_sum A f n r
+                                      | (Some l,Some r) => htree_sum A f n l + htree_sum A f n r
+                                    end
+  end.
+
+Definition ottree_burncost {n} (tht:option (ttree n)) : nat :=
+  match tht with
+    | None => 0
+    | Some(tht) => htree_sum theory theory_burncost n tht
+  end.
+
+Definition ostree_burncost {n} (sigt:option (stree n)) : nat :=
+  match sigt with
+    | None => 0
+    | Some(sigt) => htree_sum (option hashval * signa) (fun z => let (x,y) := z in signa_burncost y) n sigt
+  end.

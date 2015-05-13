@@ -375,7 +375,7 @@ Fixpoint txout_update_ostree (outpl:list addr_preasset) (sigt:option (stree 160)
 match outpl with
 | nil => sigt
 | (alpha,(obl,signapublication gamma nonce th d))::outpr =>
-  txout_update_ostree outpr (Some(ostree_insert sigt (hashval_bit160 (hashsignaspec d)) th (signaspec_stree_signa sigt th d)))
+  txout_update_ostree outpr (Some(ostree_insert sigt (hashval_bit160 (hashsignaspec d)) th (signaspec_signa th d)))
 | _::outpr => txout_update_ostree outpr sigt
 end.
 

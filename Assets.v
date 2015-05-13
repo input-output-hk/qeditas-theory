@@ -1352,16 +1352,6 @@ induction outpl1 as [|[alpha [[[a [|n]]|] [u|u|[|] gamma [u|]|[|] k gamma| |gamm
   + exact IH.
 Qed.
 
-(***
- The next two are functions giving the burncost.
- Creating theories and signatures should be done sparingly since they must be kept on every node to check future documents.
- The real functions will give the number of cants based on the number of bytes required to serialize.
- The current idea is that it will be such that 21 million fraenks must be burned to create 1GB of theories and signatures, and so there will be a hard upper bound of 1GB of theories and signatures.
-***)
-Definition theoryspec_burncost (s:theoryspec) : nat := length (ser_theoryspec s).
-
-Definition signaspec_burncost (s:signaspec) : nat := length (ser_signaspec s).
-
 Fixpoint out_burncost (outpl:list addr_preasset) : nat :=
 match outpl with
 | (alpha,(obl,theorypublication _ _ s))::outpr => theoryspec_burncost s + out_burncost outpr

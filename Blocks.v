@@ -35,15 +35,26 @@ end.
 
 Definition targetinfo_timestamp (ti:targetinfo) : nat := fst ti.
 
+(*** por_trm alpha h m : m is a trm (using Gns to summarize some subterms) with termaddr alpha and h is the asset id of an ownership asset held at alpha. ***)
+(*** por_doc alpha h d : d is a partial document with a hashroot with pubaddr alpha and h is the asset id of a publication held at alpha. ***)
+Inductive por : Type :=
+| por_trm : termaddr -> hashval -> trm -> por
+| por_doc : pubaddr -> hashval -> partialdoc -> por
+.
+
+(*** ledgerroot hashval is the combined hash for the theory tree, signature tree and ledger tree:
+     (hashopair2 <theorytreeoptionhashval> (hashopair2 <signatreeoptionhashval> <ledgerroot>))
+     See comments marked [+].
+ ***)
 Record BlockHeader {prevblockhash : option hashval} {prevledgerroot : hashval} {ti:targetinfo} : Type :=
   mkBlockHeader
     {
       newledgerroot : hashval;
       timestamp : nat;
       stake : nat;
-      stakeaddr : addr;
+      stakeaddr : payaddr;
       stakeassetid : hashval;
-      retrievable : option (sigT ctree);
+      retrievable : option por;
       totalfees : nat; (*** recall that the reward may depend on the fees in the block delta ***)
       stakeoutput : list addr_preasset;
       blocksignat : signat;
@@ -61,9 +72,9 @@ Definition Block {prevblockhash : option hashval} {prevledgerroot:hashval} {ti} 
   prod (@BlockHeader prevblockhash prevledgerroot ti) BlockDelta.
 
 Definition coinstake {pbh plr ti} (bh:@BlockHeader pbh plr ti) : Tx :=
-  ((stakeaddr bh,stakeassetid bh)::nil,stakeoutput bh).
+  ((payaddr_addr (stakeaddr bh),stakeassetid bh)::nil,stakeoutput bh).
 
-Definition hitfun : Type  := option hashval -> nat -> nat -> nat -> addr -> option (sigT ctree) -> Prop.
+Definition hitfun : Type  := option hashval -> nat -> nat -> nat -> payaddr -> option por -> Prop.
 
 Definition targetfun : Type := targetinfo -> nat.
 
@@ -79,22 +90,22 @@ Definition maturation_post_staking : nat := 100.
 (*** The output must age 100 blocks before staking. Again, 100 is arbitrary here. ***)
 Definition maturation_pre_staking : nat := 100.
 
-Definition valid_BlockHeader (blockheight:nat) (rew:nat) (check_hit : hitfun) (targetf : targetfun) {pbh plr ti} (bh:@BlockHeader pbh plr ti) : Prop :=
+Definition valid_BlockHeader (tht: option (ttree 160)) (sigt: option (stree 160)) (blockheight:nat) (rew:nat) (check_hit : hitfun) (targetf : targetfun) {pbh plr ti} (bh:@BlockHeader pbh plr ti) : Prop :=
   timestamp bh > targetinfo_timestamp ti
   /\
   check_signat (hash_BlockHeader bh) (blocksignat bh) (stakeaddr bh)
   /\
   check_hit pbh (timestamp bh) (targetf ti) (stake bh) (stakeaddr bh) (retrievable bh)
   /\
-  ctree_hashroot (prevledger bh) = plr
+  hashopair2 (ottree_hashroot tht) (hashopair2 (ostree_hashroot sigt) (ctree_hashroot (prevledger bh))) = plr (*** [+] ***)
   /\
   ((exists bday,
-      ctree_supports_asset (stakeassetid bh,(bday,(None,currency (stake bh)))) (prevledger bh) (stakeaddr bh)
+      ctree_supports_asset (stakeassetid bh,(bday,(None,currency (stake bh)))) (prevledger bh) (payaddr_addr (stakeaddr bh))
       /\
       (bday + maturation_pre_staking <= blockheight \/ bday = 0))
    \/
    (exists bday a n,
-      ctree_supports_asset (stakeassetid bh,(bday,(Some(a,n),currency (stake bh)))) (prevledger bh) (stakeaddr bh)
+      ctree_supports_asset (stakeassetid bh,(bday,(Some(a,n),currency (stake bh)))) (prevledger bh) (payaddr_addr (stakeaddr bh))
       /\
       bday + maturation_pre_staking <= blockheight
       /\
@@ -107,7 +118,7 @@ Definition valid_BlockHeader (blockheight:nat) (rew:nat) (check_hit : hitfun) (t
   (forall alpha obl u, In (alpha,(obl,u)) (stakeoutput bh) -> exists a n, obl = Some(a,n) /\ n > blockheight + maturation_post_staking)
   /\
   (*** The ctree of the previous ledger supports the declared coinstake tx. ***)
-  ctree_supports_tx blockheight (coinstake bh) (prevledger bh) 0 (rew + totalfees bh).
+  ctree_supports_tx tht sigt blockheight (coinstake bh) (prevledger bh) 0 (rew + totalfees bh).
 
 Fixpoint sTxs_allinputs (stxl : list sTx) : list addr_assetid :=
   match stxl with
@@ -162,12 +173,12 @@ Definition timestamp_of_Block {pbh plr ti} (b:@Block pbh plr ti) : nat :=
 (*** One Tx combining all the Txs in the block, including the coinstake. ***)
 Definition tx_of_Block {pbh plr ti} (b:@Block pbh plr ti) : Tx :=
   let (bh,bd) := b in
-  ((stakeaddr bh,stakeassetid bh)::sTxs_allinputs (blockdelta_stxl bd),stakeoutput bh ++ sTxs_alloutputs (blockdelta_stxl bd)).
+  ((payaddr_addr (stakeaddr bh),stakeassetid bh)::sTxs_allinputs (blockdelta_stxl bd),stakeoutput bh ++ sTxs_alloutputs (blockdelta_stxl bd)).
 
-Definition valid_Block (blockheight:nat) (rew:nat) (check_hit : hitfun) (targetf : targetfun) {pbh plr ti} (b:@Block pbh plr ti) : Prop :=
+Definition valid_Block tht sigt (blockheight:nat) (rew:nat) (check_hit : hitfun) (targetf : targetfun) {pbh plr ti} (b:@Block pbh plr ti) : Prop :=
   let (bh,bd) := b in
   (*** The header is valid. ***)
-  valid_BlockHeader blockheight rew check_hit targetf bh
+  valid_BlockHeader tht sigt blockheight rew check_hit targetf bh
   /\
   (*** There are no duplicate transactions. ***)
   no_dups (blockdelta_stxl bd)
@@ -183,7 +194,7 @@ Definition valid_Block (blockheight:nat) (rew:nat) (check_hit : hitfun) (targetf
   (forall stx, In stx (blockdelta_stxl bd) -> tx_valid blockheight (fst stx))
   /\
   (*** No transaction has the stake asset as an input. ***)
-  (forall tx, In_dom tx (blockdelta_stxl bd) -> ~ In (stakeaddr bh,stakeassetid bh) (tx_inputs tx))
+  (forall tx, In_dom tx (blockdelta_stxl bd) -> ~ In (payaddr_addr (stakeaddr bh),stakeassetid bh) (tx_inputs tx))
   /\
   (*** No distinct transactions try to spend the same asset. ***)
   (forall tx1 sl1 tx2 sl2 alpha h,
@@ -212,16 +223,16 @@ Definition valid_Block (blockheight:nat) (rew:nat) (check_hit : hitfun) (targetf
   /\
   (*** Every transaction is supported by the grafted ctree with 0 reward. ***)
   (forall tx, In_dom tx (blockdelta_stxl bd)
-              -> exists fee, ctree_supports_tx blockheight tx (ctree_of_Block (bh,bd)) fee 0)
+              -> exists fee, ctree_supports_tx tht sigt blockheight tx (ctree_of_Block (bh,bd)) fee 0)
   (*** The total inputs and outputs match up with the declared fee. ***)
   /\
   (exists utot:nat,
      ctree_asset_value_in (ctree_of_Block (bh,bd)) (sTxs_allinputs (blockdelta_stxl bd)) utot
      /\
-     asset_value_out (sTxs_alloutputs (blockdelta_stxl bd)) + (totalfees bh) = utot)
+     asset_value_out (sTxs_alloutputs (blockdelta_stxl bd)) + (totalfees bh) + out_burncost (sTxs_alloutputs (blockdelta_stxl bd)) = utot)
   /\
   exists T:ctree 162,
-    ctree_hashroot T = newledgerroot bh
+    newledgerroot bh = hashopair2 (ottree_hashroot (tx_update_ottree (tx_of_Block (bh,bd)) tht)) (hashopair2 (ostree_hashroot (tx_update_ostree (tx_of_Block (bh,bd)) sigt)) (ctree_hashroot T)) (*** [+] ***)
     /\ tx_octree_trans blockheight (tx_of_Block (bh,bd)) (Some (ctree_of_Block (bh,bd))) = Some T.
 
 Inductive BlockChain {genesisledgerroot:hashval} : hashval -> hashval -> targetinfo -> nat -> Type :=
@@ -240,18 +251,18 @@ end.
 
 Fixpoint valid_BlockChain (rewfn:nat -> nat) (check_hit:hitfun) (targetf:targetfun) {genlr pbh plr ti n} (bc : @BlockChain genlr pbh plr ti n) : Prop :=
 match bc with
-| BlockChainGen genti b => valid_Block 0 (rewfn 0) check_hit targetf b
-| BlockChainSucc pbh plr ti n bc b => valid_BlockChain rewfn check_hit targetf bc /\ valid_Block (S n) (rewfn (S n)) check_hit targetf b
+| BlockChainGen genti b => exists tht sigt, valid_Block tht sigt 0 (rewfn 0) check_hit targetf b
+| BlockChainSucc pbh plr ti n bc b => valid_BlockChain rewfn check_hit targetf bc /\ exists tht sigt, valid_Block tht sigt (S n) (rewfn (S n)) check_hit targetf b
 end.
 
 Fixpoint valid_BlockHeaderChain (rewfn:nat -> nat) (check_hit:hitfun) (targetf:targetfun) {genlr pbh plr ti n} (bc : @BlockHeaderChain genlr pbh plr ti n) : Prop :=
 match bc with
-| BlockHeaderChainGen genti bh => valid_BlockHeader 0 (rewfn 0) check_hit targetf bh
-| BlockHeaderChainSucc pbh plr ti n bc bh => valid_BlockHeaderChain rewfn check_hit targetf bc /\ valid_BlockHeader (S n) (rewfn (S n)) check_hit targetf bh
+| BlockHeaderChainGen genti bh => exists tht sigt, valid_BlockHeader tht sigt 0 (rewfn 0) check_hit targetf bh
+| BlockHeaderChainSucc pbh plr ti n bc bh => valid_BlockHeaderChain rewfn check_hit targetf bc /\ exists tht sigt, valid_BlockHeader tht sigt (S n) (rewfn (S n)) check_hit targetf bh
 end.
 
-Lemma tx_of_Block_valid blockheight rew check_hit targetf {pbh plr ti} (b:@Block pbh plr ti) :
-  valid_Block blockheight rew check_hit targetf b ->
+Lemma tx_of_Block_valid tht sigt blockheight rew check_hit targetf {pbh plr ti} (b:@Block pbh plr ti) :
+  valid_Block tht sigt blockheight rew check_hit targetf b ->
   tx_valid blockheight (tx_of_Block b).
 destruct b as [bh bd].
 intros HvB. generalize HvB.
@@ -395,22 +406,57 @@ split.
           + congruence.
           + exact L1b.
       }
-  + intros alpha a b beta H1.
-    simpl in H1. apply in_app_or in H1.
-    destruct H1 as [H1|H1].
-    * destruct HvBaf as [_ HvBaf2].
-      revert H1. apply HvBaf2.
-    * apply sTxs_alloutputs_iff in H1. destruct H1 as [[inpl outpl] [H2 H3]].
-      apply In_In_dom_lem in H2.
-      destruct H2 as [sl H2].
-      destruct (HvBd ((inpl,outpl),sl) H2) as [_ [_ H4]].
-      revert H3. apply H4.
+  + split;[|split;[|split]].
+    * { intros alpha a b beta r H1.
+        simpl in H1. apply in_app_or in H1.
+        destruct H1 as [H1|H1].
+        - destruct HvBaf as [_ HvBaf2].
+          revert H1. apply HvBaf2.
+        - apply sTxs_alloutputs_iff in H1. destruct H1 as [[inpl outpl] [H2 H3]].
+          apply In_In_dom_lem in H2.
+          destruct H2 as [sl H2].
+          destruct (HvBd ((inpl,outpl),sl) H2) as [_ [_ H4]].
+          revert H3. apply H4.
+      }
+    * { intros alpha obl beta nonce thy H1.
+        simpl in H1. apply in_app_or in H1.
+        destruct H1 as [H1|H1].
+        - destruct HvBaf as [_ HvBaf2].
+          revert H1. apply HvBaf2.
+        - apply sTxs_alloutputs_iff in H1. destruct H1 as [[inpl outpl] [H2 H3]].
+          apply In_In_dom_lem in H2.
+          destruct H2 as [sl H2].
+          destruct (HvBd ((inpl,outpl),sl) H2) as [_ [_ H4]].
+          revert H3. apply H4.
+      }
+    * { intros alpha obl beta nonce th s H1.
+        simpl in H1. apply in_app_or in H1.
+        destruct H1 as [H1|H1].
+        - destruct HvBaf as [_ HvBaf2].
+          revert H1. apply HvBaf2.
+        - apply sTxs_alloutputs_iff in H1. destruct H1 as [[inpl outpl] [H2 H3]].
+          apply In_In_dom_lem in H2.
+          destruct H2 as [sl H2].
+          destruct (HvBd ((inpl,outpl),sl) H2) as [_ [_ H4]].
+          revert H3. apply H4.
+      }
+    * { intros alpha obl beta nonce th d H1.
+        simpl in H1. apply in_app_or in H1.
+        destruct H1 as [H1|H1].
+        - destruct HvBaf as [_ HvBaf2].
+          revert H1. apply HvBaf2.
+        - apply sTxs_alloutputs_iff in H1. destruct H1 as [[inpl outpl] [H2 H3]].
+          apply In_In_dom_lem in H2.
+          destruct H2 as [sl H2].
+          destruct (HvBd ((inpl,outpl),sl) H2) as [_ [_ H4]].
+          revert H3. apply H4.
+      }
 Qed.
 
 Lemma tx_of_Block_input_iff alpha h {pbh plr ti} (b : @Block pbh plr ti) :
   In (alpha,h) (tx_inputs (tx_of_Block b))
   <->
-  ((alpha = stakeaddr (fst b) /\ h = stakeassetid (fst b))
+  ((alpha = payaddr_addr (stakeaddr (fst b)) /\ h = stakeassetid (fst b))
    \/
    exists tx sl, In (tx,sl) (blockdelta_stxl (snd b)) /\ In (alpha,h) (tx_inputs tx)).
 destruct b as [bh bd]. simpl. split; intros [H1|H1].
@@ -450,28 +496,28 @@ Lemma tx_of_Block_output_uses_iff alpha c {pbh plr ti} (b : @Block pbh plr ti) :
  <->
  (In alpha (output_uses c (stakeoutput (fst b)))
   \/
-   exists tx sl, In (tx,sl) (blockdelta_stxl (snd b)) /\ In alpha (output_uses c (tx_outputs tx))).
+   exists tx sli slo, In (tx,(sli,slo)) (blockdelta_stxl (snd b)) /\ In alpha (output_uses c (tx_outputs tx))).
 destruct b as [bh bd].
 assert (L1: In alpha (output_uses c (sTxs_alloutputs (blockdelta_stxl bd)))
             <->
-            exists (tx : Tx) (sl : list gensignat),
-              In (tx, sl) (blockdelta_stxl bd) /\
+            exists (tx : Tx) (sli slo : list gensignat),
+              In (tx, (sli,slo)) (blockdelta_stxl bd) /\
               In alpha (output_uses c (tx_outputs tx))).
 { generalize (blockdelta_stxl bd) as stxl.
-  induction stxl as [|[[inpl outpl] sl] stxl IH].
+  induction stxl as [|[[inpl outpl] [sli slo]] stxl IH].
   - simpl. split.
     + tauto.
-    + intros [tx [sl [[] _]]].
+    + intros [tx [sli [slo [[] _]]]].
   - simpl. split.
     + intros H1. apply output_uses_app_or in H1. destruct H1 as [H1|H1].
-      * exists (inpl,outpl). exists sl. simpl. tauto.
-      * apply IH in H1. destruct H1 as [tx [sl' [H2 H3]]].
-        exists tx. exists sl'. tauto.
-    + intros [tx [sl' [[H1|H1] H2]]].
+      * exists (inpl,outpl). exists sli. exists slo. simpl. tauto.
+      * apply IH in H1. destruct H1 as [tx [sli' [slo' [H2 H3]]]].
+        exists tx. exists sli'. exists slo'. tauto.
+    + intros [tx [sli' [slo' [[H1|H1] H2]]]].
       * apply output_uses_app_or. left. inversion H1.
         subst tx. exact H2.
       * apply output_uses_app_or. right. apply IH.
-        exists tx. exists sl'. tauto.
+        exists tx. exists sli'. exists slo'. tauto.
 }
 simpl. split.
 - intros H1. apply output_uses_app_or in H1. destruct H1 as [H1|H1].
@@ -480,6 +526,43 @@ simpl. split.
 - intros [H1|H1].
   + apply output_uses_app_or. now left.
   + apply output_uses_app_or. right. apply L1. exact H1.
+Qed.
+
+Lemma tx_of_Block_output_creates_iff alpha c {pbh plr ti} (b : @Block pbh plr ti) :
+ In alpha (output_creates c (tx_outputs (tx_of_Block b)))
+ <->
+ (In alpha (output_creates c (stakeoutput (fst b)))
+  \/
+   exists tx sli slo, In (tx,(sli,slo)) (blockdelta_stxl (snd b)) /\ In alpha (output_creates c (tx_outputs tx))).
+destruct b as [bh bd].
+assert (L1: In alpha (output_creates c (sTxs_alloutputs (blockdelta_stxl bd)))
+            <->
+            exists (tx : Tx) (sli slo : list gensignat),
+              In (tx, (sli,slo)) (blockdelta_stxl bd) /\
+              In alpha (output_creates c (tx_outputs tx))).
+{ generalize (blockdelta_stxl bd) as stxl.
+  induction stxl as [|[[inpl outpl] [sli slo]] stxl IH].
+  - simpl. split.
+    + tauto.
+    + intros [tx [sli [slo [[] _]]]].
+  - simpl. split.
+    + intros H1. apply output_creates_app_or in H1. destruct H1 as [H1|H1].
+      * exists (inpl,outpl). exists sli. exists slo. simpl. tauto.
+      * apply IH in H1. destruct H1 as [tx [sli' [slo' [H2 H3]]]].
+        exists tx. exists sli'. exists slo'. tauto.
+    + intros [tx [sli' [slo' [[H1|H1] H2]]]].
+      * apply output_creates_app_or. left. inversion H1.
+        subst tx. exact H2.
+      * apply output_creates_app_or. right. apply IH.
+        exists tx. exists sli'. exists slo'. tauto.
+}
+simpl. split.
+- intros H1. apply output_creates_app_or in H1. destruct H1 as [H1|H1].
+  + now left.
+  + right. now apply L1.
+- intros [H1|H1].
+  + apply output_creates_app_or. now left.
+  + apply output_creates_app_or. right. apply L1. exact H1.
 Qed.
 
 Opaque ctree_supports_addr.
@@ -494,7 +577,7 @@ rewrite output_uses_app in H3. rewrite count_rights_used_app in H3.
 rewrite rights_out_app in H5.
 assert (L3: exists rtot3 rtot4 : nat,
               ctree_rights_consumed b alpha T inpl1 rtot3 /\
-              rtot4 * u <= units_sent_to_addr beta outpl1 /\
+              rtot4 * u <= units_sent_to_addr (payaddr_addr beta) outpl1 /\
               count_rights_used (output_uses b outpl1) alpha +
               rights_out b outpl1 alpha = rtot3 + rtot4).
 { apply (H1 (count_rights_used (output_uses b (outpl1)) alpha) (rights_out b outpl1 alpha) h bday obl beta u).
@@ -504,7 +587,7 @@ assert (L3: exists rtot3 rtot4 : nat,
 }
 assert (L4: exists rtot3 rtot4 : nat,
               ctree_rights_consumed b alpha T inpl2 rtot3 /\
-              rtot4 * u <= units_sent_to_addr beta outpl2 /\
+              rtot4 * u <= units_sent_to_addr (payaddr_addr beta) outpl2 /\
               count_rights_used (output_uses b outpl2) alpha +
               rights_out b outpl2 alpha = rtot3 + rtot4).
 { apply (H2 (count_rights_used (output_uses b (outpl2)) alpha) (rights_out b outpl2 alpha) h bday obl beta u).
@@ -544,23 +627,23 @@ induction stxl as [|[[inpl outpl] sl] stxl IH].
 Qed.
 
 (*** These two lemmas were pulled out from the main proof to help Coq process the main proof. ***)
-Lemma tx_of_Block_supported_lem_1 blockheight rew {pbh plr ti} (bh:@BlockHeader pbh plr ti) (bd:BlockDelta) utot :
+Lemma tx_of_Block_supported_lem_1 tht sigt blockheight rew {pbh plr ti} (bh:@BlockHeader pbh plr ti) (bd:BlockDelta) utot :
   ctree_valid (ctree_of_Block (bh, bd)) ->
   subqc (prevledger bh) (ctree_of_Block (bh, bd)) ->
   ((exists bday,
-      ctree_supports_asset (stakeassetid bh,(bday,(None,currency (stake bh)))) (prevledger bh) (stakeaddr bh)
+      ctree_supports_asset (stakeassetid bh,(bday,(None,currency (stake bh)))) (prevledger bh) (payaddr_addr (stakeaddr bh))
       /\
       (bday + maturation_pre_staking <= blockheight \/ bday = 0))
    \/
-   (exists (bday : nat) (a : addr) (n : nat),
+   (exists (bday : nat) (a : payaddr) (n : nat),
       ctree_supports_asset
         (stakeassetid bh, (bday,(Some(a,n), currency (stake bh))))
-        (prevledger bh) (stakeaddr bh) /\
+        (prevledger bh) (payaddr_addr (stakeaddr bh)) /\
       bday + maturation_pre_staking <= blockheight /\
       n > blockheight + not_close_to_mature)) ->
-  ctree_supports_tx blockheight (coinstake bh) (prevledger bh) 0 (rew + totalfees bh) ->
-  asset_value_out (sTxs_alloutputs (blockdelta_stxl bd)) + totalfees bh = utot ->
-  asset_value_out (tx_outputs (tx_of_Block (bh, bd))) + 0 =
+  ctree_supports_tx tht sigt blockheight (coinstake bh) (prevledger bh) 0 (rew + totalfees bh) ->
+  asset_value_out (sTxs_alloutputs (blockdelta_stxl bd)) + totalfees bh + out_burncost (sTxs_alloutputs (blockdelta_stxl bd)) = utot ->
+  asset_value_out (tx_outputs (tx_of_Block (bh, bd))) + 0 + out_burncost (tx_outputs (tx_of_Block (bh,bd))) =
   stake bh + utot + rew.
   intros HT Lsubqc HvBae HvBah H3.
   simpl. rewrite asset_value_out_app.
@@ -574,11 +657,11 @@ Lemma tx_of_Block_supported_lem_1 blockheight rew {pbh plr ti} (bh:@BlockHeader 
         assert (L2a : ctree_supports_asset
                         (stakeassetid bh, (bday,(None, currency (stake bh)))) 
                         (ctree_of_Block (bh,bd))
-                        (stakeaddr bh)).
+                        (payaddr_addr (stakeaddr bh))).
         { revert H4. apply subqc_supports_asset. exact Lsubqc. }
         assert (L2b : ctree_supports_asset a
                                            (ctree_of_Block (bh,bd))
-                                           (stakeaddr bh)).
+                                           (payaddr_addr (stakeaddr bh))).
         { revert H6. apply subqc_supports_asset. exact Lsubqc. }
         generalize (ctree_supports_asset_In_statefun _ _ f _ HTf L2a).
         intros L2a'.
@@ -587,7 +670,7 @@ Lemma tx_of_Block_supported_lem_1 blockheight rew {pbh plr ti} (bh:@BlockHeader 
         rewrite <- H0 in L2a'.
         destruct a as [h' [obl' u']].
         simpl in H9. rewrite <- H9 in L2b'. rewrite <- H0 in L2b'.
-        destruct (Hf2 h (stakeaddr bh) (bday,(None,currency (stake bh))) (stakeaddr bh) (obl',u') L2a' L2b') as [_ H11].
+        destruct (Hf2 h (payaddr_addr (stakeaddr bh)) (bday,(None,currency (stake bh))) (payaddr_addr (stakeaddr bh)) (obl',u') L2a' L2b') as [_ H11].
         inversion H11. subst u'.
         unfold asset_value in H8. simpl in H8. inversion H8.
         inversion H3. omega.
@@ -595,11 +678,11 @@ Lemma tx_of_Block_supported_lem_1 blockheight rew {pbh plr ti} (bh:@BlockHeader 
         assert (L2a : ctree_supports_asset
                         (stakeassetid bh, (bday,(None, currency (stake bh))))
                         (ctree_of_Block (bh,bd))
-                        (stakeaddr bh)).
+                        (payaddr_addr (stakeaddr bh))).
         { revert H4. apply subqc_supports_asset. exact Lsubqc. }
         assert (L2b : ctree_supports_asset a
                                            (ctree_of_Block (bh,bd))
-                                           (stakeaddr bh)).
+                                           (payaddr_addr (stakeaddr bh))).
         { revert H6. apply subqc_supports_asset. exact Lsubqc. }
         generalize (ctree_supports_asset_In_statefun _ _ f _ HTf L2a).
         intros L2a'.
@@ -608,7 +691,7 @@ Lemma tx_of_Block_supported_lem_1 blockheight rew {pbh plr ti} (bh:@BlockHeader 
         rewrite <- H0 in L2a'.
         destruct a as [h' [obl' u']].
         simpl in H9. rewrite <- H9 in L2b'. rewrite <- H0 in L2b'.
-        destruct (Hf2 h (stakeaddr bh) (bday,(None,currency (stake bh))) (stakeaddr bh) (obl',u') L2a' L2b') as [_ H11].
+        destruct (Hf2 h (payaddr_addr (stakeaddr bh)) (bday,(None,currency (stake bh))) (payaddr_addr (stakeaddr bh)) (obl',u') L2a' L2b') as [_ H11].
         inversion H11. subst u'.
         unfold asset_value in H8. simpl in H8. discriminate H8.
     - simpl. intros H1. inversion H1.
@@ -616,11 +699,11 @@ Lemma tx_of_Block_supported_lem_1 blockheight rew {pbh plr ti} (bh:@BlockHeader 
         assert (L2a : ctree_supports_asset
                         (stakeassetid bh, (bday,(Some(a',n), currency (stake bh)))) 
                         (ctree_of_Block (bh,bd))
-                        (stakeaddr bh)).
+                        (payaddr_addr (stakeaddr bh))).
         { revert H4. apply subqc_supports_asset. exact Lsubqc. }
         assert (L2b : ctree_supports_asset a
                                            (ctree_of_Block (bh,bd))
-                                           (stakeaddr bh)).
+                                           (payaddr_addr (stakeaddr bh))).
         { revert H6. apply subqc_supports_asset. exact Lsubqc. }
         generalize (ctree_supports_asset_In_statefun _ _ f _ HTf L2a).
         intros L2a'.
@@ -629,7 +712,7 @@ Lemma tx_of_Block_supported_lem_1 blockheight rew {pbh plr ti} (bh:@BlockHeader 
         rewrite <- H0 in L2a'.
         destruct a as [h' [obl' u']].
         simpl in H9. rewrite <- H9 in L2b'. rewrite <- H0 in L2b'.
-        destruct (Hf2 h (stakeaddr bh) (bday,(Some(a',n),currency (stake bh))) (stakeaddr bh) (obl',u') L2a' L2b') as [_ H11].
+        destruct (Hf2 h (payaddr_addr (stakeaddr bh)) (bday,(Some(a',n),currency (stake bh))) (payaddr_addr (stakeaddr bh)) (obl',u') L2a' L2b') as [_ H11].
         inversion H11. subst u'.
         unfold asset_value in H8. simpl in H8. inversion H8.
         inversion H3. omega.
@@ -637,11 +720,11 @@ Lemma tx_of_Block_supported_lem_1 blockheight rew {pbh plr ti} (bh:@BlockHeader 
         assert (L2a : ctree_supports_asset
                         (stakeassetid bh, (bday,(Some(a', n), currency (stake bh))))
                         (ctree_of_Block (bh,bd))
-                        (stakeaddr bh)).
+                        (payaddr_addr (stakeaddr bh))).
         { revert H4. apply subqc_supports_asset. exact Lsubqc. }
         assert (L2b : ctree_supports_asset a
                                            (ctree_of_Block (bh,bd))
-                                           (stakeaddr bh)).
+                                           (payaddr_addr (stakeaddr bh))).
         { revert H6. apply subqc_supports_asset. exact Lsubqc. }
         generalize (ctree_supports_asset_In_statefun _ _ f _ HTf L2a).
         intros L2a'.
@@ -650,62 +733,148 @@ Lemma tx_of_Block_supported_lem_1 blockheight rew {pbh plr ti} (bh:@BlockHeader 
         rewrite <- H0 in L2a'.
         destruct a as [h' [obl' u']].
         simpl in H9. rewrite <- H9 in L2b'. rewrite <- H0 in L2b'.
-        destruct (Hf2 h (stakeaddr bh) (bday,(Some(a',n),currency (stake bh))) (stakeaddr bh) (obl',u') L2a' L2b') as [_ H11].
+        destruct (Hf2 h (payaddr_addr (stakeaddr bh)) (bday,(Some(a',n),currency (stake bh))) (payaddr_addr (stakeaddr bh)) (obl',u') L2a' L2b') as [_ H11].
         inversion H11. subst u'.
         unfold asset_value in H8. simpl in H8. discriminate H8.
   }
   revert H3 H5 L2. clear. intros H3 H5 L2.
   simpl in H5.
+  rewrite out_burncost_app.
   omega.
 Qed.
 
-Lemma tx_of_Block_supported_lem_2 blockheight rew {pbh plr ti} (bh:@BlockHeader pbh plr ti) (bd:BlockDelta) :
+Lemma tx_of_Block_supported_lem_2 tht sigt blockheight rew {pbh plr ti} (bh:@BlockHeader pbh plr ti) (bd:BlockDelta) :
   subqc (prevledger bh) (ctree_of_Block (bh, bd)) ->
-  ctree_supports_tx blockheight (coinstake bh) (prevledger bh) 0
+  ctree_supports_tx tht sigt blockheight (coinstake bh) (prevledger bh) 0
                     (rew + totalfees bh) ->
   (forall tx : Tx,
      In_dom tx (blockdelta_stxl bd) ->
      exists fee : nat,
-       ctree_supports_tx blockheight tx (ctree_of_Block (bh, bd)) fee 0) ->
-  forall (obl : obligation) (nonce : nat) (th:option hashval) (d : doc) (alpha : addr),
-    In (alpha, (obl, docpublication nonce th d)) (tx_outputs (tx_of_Block (bh, bd))) ->
-    exists (beta : addr) (h : hashval) (bday : nat) 
+       ctree_supports_tx tht sigt blockheight tx (ctree_of_Block (bh, bd)) fee 0) ->
+  (forall (obl : obligation) gamma (nonce : nat) (d : theoryspec) (alpha : addr),
+    In (alpha, (obl, theorypublication gamma nonce d)) (tx_outputs (tx_of_Block (bh, bd))) ->
+    check_theoryspec_p d /\
+    (exists (beta : addr) (h : hashval) (bday : nat) 
            (obl0 : obligation),
-      beta = hashval_intention_addr (hashpair (hashnat nonce) (hashopair2 th (hashdoc d))) /\
+      beta = hashval_publication_addr (hashpair (hashaddr (payaddr_addr gamma)) (hashpair (hashnat nonce) (hashtheoryspec d))) /\
       In (beta, h) (tx_inputs (tx_of_Block (bh, bd))) /\
       bday + intention_minage <= blockheight /\
-      ctree_supports_asset (h, (bday, (obl0, intention alpha)))
-                           (ctree_of_Block (bh, bd)) beta.
-  intros Lsubqc HvBah HvBj.
-  intros obl nonce th d alpha H1.
-  apply tx_of_Block_output_iff in H1.
-  destruct H1 as [H1|[tx' [sl' [H2 H3]]]].
-  + destruct HvBah as [_ [_ [_ [H5 _]]]].
-    destruct (H5 obl nonce th d alpha H1) as [beta [h [bday' [obl' [H6 [H7 [H8 H9]]]]]]].
-    exists beta. exists h. exists bday'. exists obl'. repeat split.
-    * exact H6.
-    * apply tx_of_Block_input_iff.
-      left. simpl in H7. destruct H7 as [H7|[]].
-      inversion H7. split; reflexivity.
-    * exact H8.
-    * revert H9. apply subqc_supports_asset. exact Lsubqc.
-  + simpl in H2. generalize H2. intros H2a. apply In_In_dom_lem_2 in H2a.
-    destruct (HvBj tx' H2a) as [fee [_ [_ [_ [H5 _]]]]].
-    destruct (H5 obl nonce th d alpha H3) as [beta [h [bday' [obl' [H6 [H7 [H8 H9]]]]]]].
-    exists beta. exists h. exists bday'. exists obl'. repeat split.
-    * exact H6.
-    * apply tx_of_Block_input_iff.
-      right. exists tx'. exists sl'. tauto.
-    * exact H8.
-    * exact H9.
+      ctree_supports_asset (h, (bday, (obl0, marker)))
+                           (ctree_of_Block (bh, bd)) beta))
+  /\
+  (forall (obl : obligation) gamma (nonce : nat) (th:option hashval) (d : signaspec) (alpha : addr),
+    In (alpha, (obl, signapublication gamma nonce th d)) (tx_outputs (tx_of_Block (bh, bd))) ->
+    check_signaspec_p (ctree_lookup_stp (ctree_of_Block (bh, bd)))
+      (ctree_lookup_known (ctree_of_Block (bh, bd))) tht sigt th d /\
+    exists (beta : addr) (h : hashval) (bday : nat) 
+           (obl0 : obligation),
+      beta = hashval_publication_addr (hashpair (hashaddr (payaddr_addr gamma)) (hashpair (hashnat nonce) (hashopair2 th (hashsignaspec d)))) /\
+      In (beta, h) (tx_inputs (tx_of_Block (bh, bd))) /\
+      bday + intention_minage <= blockheight /\
+      ctree_supports_asset (h, (bday, (obl0, marker)))
+                           (ctree_of_Block (bh, bd)) beta)
+  /\
+  (forall (obl : obligation) gamma (nonce : nat) (th:option hashval) (d : doc) (alpha : addr),
+    In (alpha, (obl, docpublication gamma nonce th d)) (tx_outputs (tx_of_Block (bh, bd))) ->
+    check_doc_p (ctree_lookup_stp (ctree_of_Block (bh, bd)))
+      (ctree_lookup_known (ctree_of_Block (bh, bd))) tht sigt th d /\
+    exists (beta : addr) (h : hashval) (bday : nat) 
+           (obl0 : obligation),
+      beta = hashval_publication_addr (hashpair (hashaddr (payaddr_addr gamma)) (hashpair (hashnat nonce) (hashopair2 th (hashdoc d)))) /\
+      In (beta, h) (tx_inputs (tx_of_Block (bh, bd))) /\
+      bday + intention_minage <= blockheight /\
+      ctree_supports_asset (h, (bday, (obl0, marker)))
+                           (ctree_of_Block (bh, bd)) beta).
+  intros Lsubqc HvBah HvBj. split; [|split].
+  - intros obl gamma nonce d alpha H1.
+    apply tx_of_Block_output_iff in H1.
+    destruct H1 as [H1|[tx' [sl' [H2 H3]]]].
+    + destruct HvBah as [_ [_ [_ [[H5a [H5b H5c]] _]]]].
+      destruct (H5a obl gamma nonce d alpha H1) as [Hch [beta [h [bday' [obl' [H6 [H7 [H8 H9]]]]]]]].
+      split.
+      * exact Hch.
+      * { exists beta. exists h. exists bday'. exists obl'. repeat split.
+          - exact H6.
+          - apply tx_of_Block_input_iff.
+            left. simpl in H7. destruct H7 as [H7|[]].
+            inversion H7. split; reflexivity.
+          - exact H8.
+          - revert H9. apply subqc_supports_asset. exact Lsubqc.
+        }
+    + simpl in H2. generalize H2. intros H2a. apply In_In_dom_lem_2 in H2a.
+      destruct (HvBj tx' H2a) as [fee [_ [_ [_ [[H5a [H5b H5c]] _]]]]].
+      destruct (H5a obl gamma nonce d alpha H3) as [Hch [beta [h [bday' [obl' [H6 [H7 [H8 H9]]]]]]]].
+      split.
+      * exact Hch.
+      * { exists beta. exists h. exists bday'. exists obl'. repeat split.
+          - exact H6.
+          - apply tx_of_Block_input_iff.
+            right. exists tx'. exists sl'. tauto.
+          - exact H8.
+          - exact H9.
+        }
+  - intros obl gamma nonce th d alpha H1.
+    apply tx_of_Block_output_iff in H1.
+    destruct H1 as [H1|[tx' [sl' [H2 H3]]]].
+    + destruct HvBah as [_ [_ [_ [[H5a [H5b H5c]] _]]]].
+      destruct (H5b obl gamma nonce th d alpha H1) as [Hch [beta [h [bday' [obl' [H6 [H7 [H8 H9]]]]]]]].
+      split.
+      * revert Lsubqc Hch. apply subqc_check_signaspec_p.
+      * { exists beta. exists h. exists bday'. exists obl'. repeat split.
+          - exact H6.
+          - apply tx_of_Block_input_iff.
+            left. simpl in H7. destruct H7 as [H7|[]].
+            inversion H7. split; reflexivity.
+          - exact H8.
+          - revert H9. apply subqc_supports_asset. exact Lsubqc.
+        }
+    + simpl in H2. generalize H2. intros H2a. apply In_In_dom_lem_2 in H2a.
+      destruct (HvBj tx' H2a) as [fee [_ [_ [_ [[H5a [H5b H5c]] _]]]]].
+      destruct (H5b obl gamma nonce th d alpha H3) as [Hch [beta [h [bday' [obl' [H6 [H7 [H8 H9]]]]]]]].
+      split.
+      * exact Hch.
+      * { exists beta. exists h. exists bday'. exists obl'. repeat split.
+          - exact H6.
+          - apply tx_of_Block_input_iff.
+            right. exists tx'. exists sl'. tauto.
+          - exact H8.
+          - exact H9.
+        }
+  - intros obl gamma nonce th d alpha H1.
+    apply tx_of_Block_output_iff in H1.
+    destruct H1 as [H1|[tx' [sl' [H2 H3]]]].
+    + destruct HvBah as [_ [_ [_ [[H5a [H5b H5c]] _]]]].
+      destruct (H5c obl gamma nonce th d alpha H1) as [Hch [beta [h [bday' [obl' [H6 [H7 [H8 H9]]]]]]]].
+      split.
+      * revert Lsubqc Hch. apply subqc_check_doc_p.
+      * { exists beta. exists h. exists bday'. exists obl'. repeat split.
+          - exact H6.
+          - apply tx_of_Block_input_iff.
+            left. simpl in H7. destruct H7 as [H7|[]].
+            inversion H7. split; reflexivity.
+          - exact H8.
+          - revert H9. apply subqc_supports_asset. exact Lsubqc.
+        }
+    + simpl in H2. generalize H2. intros H2a. apply In_In_dom_lem_2 in H2a.
+      destruct (HvBj tx' H2a) as [fee [_ [_ [_ [[H5a [H5b H5c]] _]]]]].
+      destruct (H5c obl gamma nonce th d alpha H3) as [Hch [beta [h [bday' [obl' [H6 [H7 [H8 H9]]]]]]]].
+      split.
+      * exact Hch.
+      * { exists beta. exists h. exists bday'. exists obl'. repeat split.
+          - exact H6.
+          - apply tx_of_Block_input_iff.
+            right. exists tx'. exists sl'. tauto.
+          - exact H8.
+          - exact H9.
+        }
 Qed.
 
 Opaque ctree_full_approx_addr.
 
-Theorem tx_of_Block_supported blockheight rew check_hit targetf {pbh plr ti} (b:@Block pbh plr ti) :
+Theorem tx_of_Block_supported tht sigt blockheight rew check_hit targetf {pbh plr ti} (b:@Block pbh plr ti) :
   ctree_valid (ctree_of_Block b) ->
-  valid_Block blockheight rew check_hit targetf b ->
-  ctree_supports_tx blockheight (tx_of_Block b) (ctree_of_Block b) 0 rew.
+  valid_Block tht sigt blockheight rew check_hit targetf b ->
+  ctree_supports_tx tht sigt blockheight (tx_of_Block b) (ctree_of_Block b) 0 rew.
 destruct b as [bh bd]. intros HT HvB. generalize HvB.
 intros [[HvBaa [HvBab [HvBac [HvBad [HvBae [HvBaf [HvBag HvBah]]]]]]] [HvBb [HvBc [HvBd [HvBe [HvBf [HvBg [HvBh [HvBi [HvBj [HvBk HvBl]]]]]]]]]]].
 generalize HvBah. intros [HvBah1 [HvBah23 [[HvBah4a HvBah4b] [HvBah5 [HvBah6 [HvBah7 HvBah8]]]]]].
@@ -726,7 +895,7 @@ split.
     exists (stake bh + utot).
     split.
     * { change (ctree_asset_value_in (ctree_of_Block (bh, bd))
-                                     ((stakeaddr bh, stakeassetid bh)
+                                     ((payaddr_addr (stakeaddr bh), stakeassetid bh)
                                         :: sTxs_allinputs (blockdelta_stxl bd))
                                      (stake bh + utot)).
         destruct HvBae as [[bday [H4 H5]]|[bday [a [n [H4 [H5a H5]]]]]].
@@ -748,7 +917,7 @@ split.
         - intros alpha b H1.
           destruct H1 as [H1|[beta2 [obl2 [n2 H1]]]].
           + apply tx_of_Block_output_uses_iff in H1.
-            destruct H1 as [H1|[tx [sl [H1 H2]]]].
+            destruct H1 as [H1|[tx [sli [slo [H1 H2]]]]].
             * { assert (L3: rights_mentioned alpha b (tx_outputs (coinstake bh))).
                 { now left. }
                 destruct (HvBah4a alpha b L3) as [H4 [H5 H6]].
@@ -760,11 +929,11 @@ split.
                     revert H4 H7. apply subqc_full_approx_supports_asset_conv.
                     exact Lsubqc.
                   + change (ctree_rights_balanced (ctree_of_Block (bh, bd)) alpha b
-                                                  (((stakeaddr bh, stakeassetid bh) ::nil) ++ sTxs_allinputs (blockdelta_stxl bd))
+                                                  (((payaddr_addr (stakeaddr bh), stakeassetid bh) ::nil) ++ sTxs_allinputs (blockdelta_stxl bd))
                                                   (stakeoutput bh ++ sTxs_alloutputs (blockdelta_stxl bd))).
                     apply ctree_rights_balanced_app.
                     * { intros rtot1 rtot2 h bday obl beta u H7 H8 H9.
-                        assert (L8: ctree_supports_asset (h, (bday,(obl, owns b beta (Some u)))) (prevledger bh) alpha).
+                        assert (L8: ctree_supports_asset (h, (bday,(obl, owns b beta (Some u)))) (prevledger bh) (termaddr_addr alpha)).
                         { revert Lsubqc H4 H8. apply subqc_full_approx_supports_asset_conv. }
                         destruct (H6 rtot1 rtot2 h bday obl beta u H7 L8 H9) as [rtot3 [rtot4 [H10 [H11 H12]]]].
                         exists rtot3. exists rtot4.
@@ -824,13 +993,13 @@ split.
                     apply H5. exists h'. exists obl'. exists beta'.
                     exact H7.
                   + change (ctree_rights_balanced (ctree_of_Block (bh, bd)) alpha b
-                                                  (((stakeaddr bh, stakeassetid bh) ::nil) ++ sTxs_allinputs (blockdelta_stxl bd))
+                                                  (((payaddr_addr (stakeaddr bh), stakeassetid bh) ::nil) ++ sTxs_allinputs (blockdelta_stxl bd))
                                                   (stakeoutput bh ++ sTxs_alloutputs (blockdelta_stxl bd))).
                     apply ctree_rights_balanced_app.
                     * { intros rtot1 rtot2 h bday obl beta u H7 H8 H9.
                         destruct (rights_mentioned_dec alpha b (tx_outputs (coinstake bh))) as [D1|D1].
                         - destruct (HvBah4a alpha b D1) as [H4' [H5' H6']].
-                          assert (L8: ctree_supports_asset (h, (bday,(obl, owns b beta (Some u)))) (prevledger bh) alpha).
+                          assert (L8: ctree_supports_asset (h, (bday,(obl, owns b beta (Some u)))) (prevledger bh) (termaddr_addr alpha)).
                           { revert Lsubqc H4' H8. apply subqc_full_approx_supports_asset_conv. }
                           destruct (H6' rtot1 rtot2 h bday obl beta u H7 L8 H9) as [rtot3 [rtot4 [H10 [H11 H12]]]].
                           exists rtot3. exists rtot4.
@@ -850,7 +1019,7 @@ split.
                           + destruct HvBae as [[bday' [H10 _]]|[bday' [a' [n [H10 _]]]]].
                             * assert (L10: ctree_supports_asset
                                              (stakeassetid bh, (bday',(None, currency (stake bh))))
-                                             (ctree_of_Block (bh,bd)) (stakeaddr bh)).
+                                             (ctree_of_Block (bh,bd)) (payaddr_addr (stakeaddr bh))).
                               { revert Lsubqc H10. apply subqc_supports_asset. }
                               assert (L11: ~exists r2, currency (stake bh) = rights b r2 alpha).
                               { intros [r2 H11]. discriminate H11. }
@@ -858,7 +1027,7 @@ split.
                               apply ctree_rights_consumed_nil.
                             * assert (L10: ctree_supports_asset
                                              (stakeassetid bh, (bday', (Some(a', n), currency (stake bh))))
-                                             (ctree_of_Block (bh,bd)) (stakeaddr bh)).
+                                             (ctree_of_Block (bh,bd)) (payaddr_addr (stakeaddr bh))).
                               { revert Lsubqc H10. apply subqc_supports_asset. }
                               assert (L11: ~exists r2, currency (stake bh) = rights b r2 alpha).
                               { intros [r2 H11]. discriminate H11. }
@@ -905,7 +1074,7 @@ split.
                       }
               }
           + apply tx_of_Block_output_iff in H1.
-            destruct H1 as [H1|[tx [sl [H1 H2]]]].
+            destruct H1 as [H1|[tx [[sli slo] [H1 H2]]]].
             * { assert (L3: rights_mentioned alpha b (tx_outputs (coinstake bh))).
                 { right. exists beta2. exists obl2. exists n2. exact H1. }
                 destruct (HvBah4a alpha b L3) as [H4 [H5 H6]].
@@ -917,11 +1086,11 @@ split.
                     revert H4 H7. apply subqc_full_approx_supports_asset_conv.
                     exact Lsubqc.
                   + change (ctree_rights_balanced (ctree_of_Block (bh, bd)) alpha b
-                                                  (((stakeaddr bh, stakeassetid bh) ::nil) ++ sTxs_allinputs (blockdelta_stxl bd))
+                                                  (((payaddr_addr (stakeaddr bh), stakeassetid bh) ::nil) ++ sTxs_allinputs (blockdelta_stxl bd))
                                                   (stakeoutput bh ++ sTxs_alloutputs (blockdelta_stxl bd))).
                     apply ctree_rights_balanced_app.
                     * { intros rtot1 rtot2 h bday obl beta u H7 H8 H9.
-                        assert (L8: ctree_supports_asset (h, (bday,(obl, owns b beta (Some u)))) (prevledger bh) alpha).
+                        assert (L8: ctree_supports_asset (h, (bday,(obl, owns b beta (Some u)))) (prevledger bh) (termaddr_addr alpha)).
                         { revert Lsubqc H4 H8. apply subqc_full_approx_supports_asset_conv. }
                         destruct (H6 rtot1 rtot2 h bday obl beta u H7 L8 H9) as [rtot3 [rtot4 [H10 [H11 H12]]]].
                         exists rtot3. exists rtot4.
@@ -981,13 +1150,13 @@ split.
                     apply H5. exists h'. exists obl'. exists beta'.
                     exact H7.
                   + change (ctree_rights_balanced (ctree_of_Block (bh, bd)) alpha b
-                                                  (((stakeaddr bh, stakeassetid bh) ::nil) ++ sTxs_allinputs (blockdelta_stxl bd))
+                                                  (((payaddr_addr (stakeaddr bh), stakeassetid bh) ::nil) ++ sTxs_allinputs (blockdelta_stxl bd))
                                                   (stakeoutput bh ++ sTxs_alloutputs (blockdelta_stxl bd))).
                     apply ctree_rights_balanced_app.
                     * { intros rtot1 rtot2 h bday obl beta u H7 H8 H9.
                         destruct (rights_mentioned_dec alpha b (tx_outputs (coinstake bh))) as [D1|D1].
                         - destruct (HvBah4a alpha b D1) as [H4' [H5' H6']].
-                          assert (L8: ctree_supports_asset (h, (bday, (obl, owns b beta (Some u)))) (prevledger bh) alpha).
+                          assert (L8: ctree_supports_asset (h, (bday, (obl, owns b beta (Some u)))) (prevledger bh) (termaddr_addr alpha)).
                           { revert Lsubqc H4' H8. apply subqc_full_approx_supports_asset_conv. }
                           destruct (H6' rtot1 rtot2 h bday obl beta u H7 L8 H9) as [rtot3 [rtot4 [H10 [H11 H12]]]].
                           exists rtot3. exists rtot4.
@@ -1007,7 +1176,7 @@ split.
                           + destruct HvBae as [[bday' [H10 _]]|[bday' [a' [n [H10 _]]]]].
                             * assert (L10: ctree_supports_asset
                                              (stakeassetid bh, (bday', (None, currency (stake bh))))
-                                             (ctree_of_Block (bh,bd)) (stakeaddr bh)).
+                                             (ctree_of_Block (bh,bd)) (payaddr_addr (stakeaddr bh))).
                               { revert Lsubqc H10. apply subqc_supports_asset. }
                               assert (L11: ~exists r2, currency (stake bh) = rights b r2 alpha).
                               { intros [r2 H11]. discriminate H11. }
@@ -1015,7 +1184,7 @@ split.
                               apply ctree_rights_consumed_nil.
                             * assert (L10: ctree_supports_asset
                                              (stakeassetid bh, (bday', (Some(a', n), currency (stake bh))))
-                                             (ctree_of_Block (bh,bd)) (stakeaddr bh)).
+                                             (ctree_of_Block (bh,bd)) (payaddr_addr (stakeaddr bh))).
                               { revert Lsubqc H10. apply subqc_supports_asset. }
                               assert (L11: ~exists r2, currency (stake bh) = rights b r2 alpha).
                               { intros [r2 H11]. discriminate H11. }
@@ -1063,7 +1232,7 @@ split.
               }
         - intros alpha b beta h bday obl n H1 H2.
           apply tx_of_Block_input_iff in H1.
-          destruct H1 as [[H1a H1b]|[tx [sl [H1a H1b]]]].
+          destruct H1 as [[H1a H1b]|[tx [[sli slo] [H1a H1b]]]].
           + exfalso. (*** impossible since the stake asset is currency, not rights. ***)
             generalize HT. intros [f [[_ [Hf2 _]] HTf]].
             generalize (ctree_supports_asset_In_statefun _ _ f _ HTf H2).
@@ -1071,7 +1240,7 @@ split.
             destruct HvBae as [[bday' [H4 H5]]|[bday' [a' [n' [H4 [H5a H5]]]]]].
             * assert (L4: ctree_supports_asset
                             (h, (bday',(None, currency (stake bh))))
-                            (ctree_of_Block (bh,bd)) (stakeaddr bh)).
+                            (ctree_of_Block (bh,bd)) (payaddr_addr (stakeaddr bh))).
               { simpl in H1b. rewrite H1b.
                 revert Lsubqc H4. apply subqc_supports_asset.
               }
@@ -1081,7 +1250,7 @@ split.
               discriminate H6.
             * assert (L4: ctree_supports_asset
                             (h, (bday',((Some(a', n')), currency (stake bh))))
-                            (ctree_of_Block (bh,bd)) (stakeaddr bh)).
+                            (ctree_of_Block (bh,bd)) (payaddr_addr (stakeaddr bh))).
               { simpl in H1b. rewrite H1b.
                 revert Lsubqc H4. apply subqc_supports_asset.
               }
@@ -1093,10 +1262,10 @@ split.
             destruct (HvBj tx H1aa) as [fee [_ [_ [[_ H4b] _]]]].
             destruct (H4b _ _ _ _ _ _ _ H1b H2) as [H5|[gamma [obl2 [n2 H5]]]].
             * left. apply tx_of_Block_output_uses_iff.
-              right. exists tx. exists sl. split; assumption.
+              right. exists tx. exists sli. exists slo. split; assumption.
             * right. exists gamma. exists obl2. exists n2.
               apply tx_of_Block_output_iff.
-              right. exists tx. exists sl. split; assumption.
+              right. exists tx. exists (sli,slo). split; assumption.
       }
     * { split.
         - revert Lsubqc HvBah HvBj.
@@ -1106,7 +1275,7 @@ split.
             intros Lsubqc HvBah6 HvBj.
             intros alpha b obl beta r H1.
             apply tx_of_Block_output_iff in H1.
-            destruct H1 as [H1|[tx [sl [H1 H2]]]].
+            destruct H1 as [H1|[tx [[sli slo] [H1 H2]]]].
             * { destruct (HvBah6 alpha b obl beta r H1) as [H7 H8].
                 split.
                 - revert H7. apply subqc_full_approx_addr. exact Lsubqc.
@@ -1117,15 +1286,18 @@ split.
                     * apply tx_of_Block_input_iff.
                       left. simpl in H10. destruct H10 as [H10|[]].
                       inversion H10.
-                      split; reflexivity.
                   + right. split.
                     * intros [h [beta' [bday' [obl' [r' H11]]]]].
                       apply H9.
                       exists h. exists beta'. exists bday'. exists obl'. exists r'.
                       revert Lsubqc H7 H11.
                       apply subqc_full_approx_supports_asset_conv.
-                    * apply tx_of_Block_output_uses_iff.
-                      left. exact H10.
+                    * { destruct H10 as [k1 [k2 [H10a H10b]]].
+                        exists k1. exists k2. split.
+                        - apply tx_of_Block_output_creates_iff.
+                          left. exact H10a.
+                        - exact H10b.
+                      }
               }
             * { generalize H1. intros H1b. apply In_In_dom_lem_2 in H1b.
                 destruct (HvBj tx H1b) as [fee [_ [_ [_ [_ [H6 _]]]]]].
@@ -1136,53 +1308,90 @@ split.
                   + left. exists h. exists beta'. exists bday'. exists obl'. exists r'.
                     split.
                     * exact H9.
-                    * apply tx_of_Block_input_iff. right. exists tx. exists sl.
+                    * apply tx_of_Block_input_iff. right. exists tx. exists (sli,slo).
                       split; assumption.
                   + right. split.
                     * intros [h [beta' [bday' [obl' [r' H11]]]]].
                       apply H9.
                       exists h. exists beta'. exists bday'. exists obl'. exists r'.
                       exact H11.
-                    * apply tx_of_Block_output_uses_iff.
-                      right. exists tx. exists sl.
-                      split; assumption.
+                    * { destruct H10 as [k1 [k2 [H10a H10b]]].
+                        exists k1. exists k2. split.
+                        - apply tx_of_Block_output_creates_iff.
+                          right. exists tx. exists sli. exists slo. split.
+                          + exact H1.
+                          + exact H10a.
+                        - exact H10b.
+                      }
               }
           + split.
-            * { intros alpha b H1.
-                apply tx_of_Block_output_uses_iff in H1.
-                destruct H1 as [H1|[tx [sl [H1 H2]]]].
-                - destruct (HvBah7 alpha b H1) as [H3 H4].
+            * { intros k1 k2 b H1.
+                apply tx_of_Block_output_creates_iff in H1.
+                destruct H1 as [H1|[tx [sli [slo [H1 H2]]]]].
+                - destruct (HvBah7 k1 k2 b H1) as [H3 H4].
                   split.
                   + revert Lsubqc H3. apply subqc_full_approx_addr.
                   + intros H5.
-                    assert (L4: ~ (exists (h' : hashval) (beta' : addr) (bday':nat) (obl' : obligation) (r' : option nat),
-                                     ctree_supports_asset (h', (bday', (obl', owns true beta' r')))
-                                                          (prevledger bh) alpha)).
+                    assert (L4: ~ (exists (h' : hashval) (beta' : payaddr) (bday':nat) (obl' : obligation) (r' : option nat),
+                                     ctree_supports_asset (h', (bday', (obl', owns b beta' r')))
+                                                          (prevledger bh) (hashval_term_addr k1))).
                     { intros [h' [beta' [bday' [obl' [r' H6]]]]].
                       apply H5. exists h'. exists beta'. exists bday'. exists obl'. exists r'.
                       revert Lsubqc H6. apply subqc_supports_asset.
                     }
-                    destruct (H4 L4) as [beta [obl [r H6]]].
-                    exists beta. exists obl. exists r.
-                    apply tx_of_Block_output_iff.
-                    left. exact H6.
+                    destruct (H4 L4) as [[beta [obl [r H6]]] H7].
+                    split.
+                    * exists beta. exists obl. exists r.
+                      apply tx_of_Block_output_iff.
+                      left. exact H6.
+                    * { destruct b.
+                        - destruct H7 as [obl2 [obl3 [H8 H9]]].
+                          exists obl2. exists obl3. split.
+                          + apply tx_of_Block_output_iff.
+                            left. exact H8.
+                          + apply tx_of_Block_output_iff.
+                            left. exact H9.
+                        - destruct H7 as [obl2 H8].
+                          exists obl2. 
+                          apply tx_of_Block_output_iff.
+                          left. exact H8.
+                      }
                 - generalize H1. intros H1b. apply In_In_dom_lem_2 in H1b.
                   destruct (HvBj tx H1b) as [fee [_ [_ [_ [_ [_ [H7 _]]]]]]].
-                  destruct (H7 alpha b H2) as [H3 H4].
+                  destruct (H7 k1 k2 b H2) as [H3 H4].
                   split.
                   + exact H3.
                   + intros H5.
-                    assert (L4: ~ (exists (h' : hashval) (beta' : addr) (bday' : nat) (obl' : obligation) (r' : option nat),
-                                     ctree_supports_asset (h', (bday', (obl', owns true beta' r')))
-                                                          (ctree_of_Block (bh, bd)) alpha)).
+                    assert (L4: ~ (exists (h' : hashval) (beta' : payaddr) (bday' : nat) (obl' : obligation) (r' : option nat),
+                                     ctree_supports_asset (h', (bday', (obl', owns b beta' r')))
+                                                          (ctree_of_Block (bh, bd)) (hashval_term_addr k1))).
                     { intros [h' [beta' [bday' [obl' [r' H6]]]]].
                       apply H5. exists h'. exists beta'. exists bday'. exists obl'. exists r'.
                       exact H6.
                     }
-                    destruct (H4 L4) as [beta [obl [r H6]]].
-                    exists beta. exists obl. exists r.
-                    apply tx_of_Block_output_iff.
-                    right. exists tx. exists sl. split; assumption.
+                    destruct (H4 L4) as [[beta [obl [r H6]]] H8].
+                    split.
+                    * exists beta. exists obl. exists r.
+                      apply tx_of_Block_output_iff.
+                      right. exists tx. exists (sli,slo). split; assumption.
+                    * { destruct b.
+                        - destruct H8 as [obl2 [obl3 [H8 H9]]].
+                          exists obl2. exists obl3. split.
+                          + apply tx_of_Block_output_iff.
+                            right. exists tx. exists (sli,slo). split.
+                            * exact H1.
+                            * exact H8.
+                          + apply tx_of_Block_output_iff.
+                            right. exists tx. exists (sli,slo). split.
+                            * exact H1.
+                            * exact H9.
+                        - destruct H8 as [obl2 H8].
+                          exists obl2. 
+                          apply tx_of_Block_output_iff.
+                          right. exists tx. exists (sli,slo). split.
+                          + exact H1.
+                          + exact H8.
+                      }
               }
             * { intros alpha h bday obl u H1 H2.
                 apply tx_of_Block_input_iff in H1.
@@ -1196,7 +1405,7 @@ split.
                   destruct HvBae as [[bday' [H4 H5]]|[bday' [a' [n [H4 H5]]]]].
                   + assert (L4: ctree_supports_asset
                                   (h, (bday', (None, currency (stake bh))))
-                                  (ctree_of_Block (bh,bd)) (stakeaddr bh)).
+                                  (ctree_of_Block (bh,bd)) (payaddr_addr (stakeaddr bh))).
                     { rewrite H1b.
                       revert Lsubqc H4. apply subqc_supports_asset.
                     }
@@ -1206,7 +1415,7 @@ split.
                     discriminate H6.
                   + assert (L4: ctree_supports_asset
                                   (h, (bday', ((Some(a', n)), currency (stake bh))))
-                                  (ctree_of_Block (bh,bd)) (stakeaddr bh)).
+                                  (ctree_of_Block (bh,bd)) (payaddr_addr (stakeaddr bh))).
                     { rewrite H1b.
                       revert Lsubqc H4. apply subqc_supports_asset.
                     }
@@ -1230,7 +1439,10 @@ split.
 Qed.
 
 Definition ledgerroot_valid (h:hashval) : Prop :=
-  ctree_valid (ctreeH 162 h).
+  exists (tht:option (ttree 160)) (sigt:option (stree 160)) (k:hashval),
+    h = hashopair2 (ottree_hashroot tht) (hashopair2 (ostree_hashroot sigt) k) (*** [+] ***)
+    /\
+    ctree_valid (ctreeH 162 k).
 
 Definition ledgerroot_of_BlockChain {genh pbh plr ti n} (bc:@BlockChain genh pbh plr ti n) : hashval :=
 match bc with
@@ -1256,14 +1468,14 @@ Opaque ctree_cgraft.
 Opaque cgraft_assoc.
 Opaque subqm.
 
-Lemma endledgerroot_plr_valid_lem1 pbh lroot ti (bh:@BlockHeader pbh lroot ti) bd (f:statefun) :
-  mtree_approx_fun_p (ctree_mtree (ctreeH 162 lroot)) f ->
-  ctree_hashroot (prevledger bh) = lroot ->
+Lemma endledgerroot_plr_valid_lem1 pbh lroot lr ti (bh:@BlockHeader pbh lroot ti) bd (f:statefun) :
+  mtree_approx_fun_p (ctree_mtree (ctreeH 162 lr)) f ->
+  ctree_hashroot (prevledger bh) = lr ->
   cgraft_valid (prevledgergraft bd) ->
   mtree_approx_fun_p (ctree_mtree (ctree_of_Block (bh, bd))) f.
 intros H1 H2 H3.
-apply (mtree_hashroot_mtree_approx_fun_p (ctree_mtree (ctreeH 162 lroot))).
-- change (mtree_hashroot (ctree_mtree (ctreeH 162 lroot)) =
+apply (mtree_hashroot_mtree_approx_fun_p (ctree_mtree (ctreeH 162 lr))).
+- change (mtree_hashroot (ctree_mtree (ctreeH 162 lr)) =
           mtree_hashroot (ctree_mtree (ctree_of_Block (bh, bd)))).
   rewrite mtree_hashroot_ctree_hashroot.
   rewrite mtree_hashroot_ctree_hashroot.
@@ -1286,37 +1498,56 @@ Theorem endledgerroot_plr_valid rewfn check_hit targetf {genlr pbh plr ti n}
   valid_BlockChain rewfn check_hit targetf bc ->
   ledgerroot_valid plr.
 intros H1. induction bc as [ti [bh bd]|pbh plr ti n bc IH [bh bd]].
-- intros H2. generalize H2. intros [[H2aa [H2ab [H2ac [H2ad [H2ae [H2af [H2ag H2ah]]]]]]] [H2b [H2c [H2d [H2e [H2f [H2g [H2h [H2i [H2j [H2k H2l]]]]]]]]]]].
+- intros [tht [sigt H2]]. generalize H2. intros [[H2aa [H2ab [H2ac [H2ad [H2ae [H2af [H2ag H2ah]]]]]]] [H2b [H2c [H2d [H2e [H2f [H2g [H2h [H2i [H2j [H2k H2l]]]]]]]]]]].
   assert (LT: ctree_valid (ctree_of_Block (bh,bd))).
   { unfold ctree_of_Block. apply ctree_valid_cgraft_valid.
     - revert H1. unfold ledgerroot_valid. unfold ctree_valid.
-      apply mtree_hashroot_eq_valid.
+      intros [tht' [sigt' [k [E1 H3]]]].
+      revert H3. apply mtree_hashroot_eq_valid.
       rewrite mtree_hashroot_ctree_hashroot.
       rewrite mtree_hashroot_ctree_hashroot.
       rewrite ctree_hashroot_ctree_H.
-      f_equal. exact H2ad.
+      f_equal. 
+      assert (L1: hashopair2 (ottree_hashroot tht) (hashopair2 (ostree_hashroot sigt) (ctree_hashroot (prevledger bh)))
+                  =
+                  (hashopair2 (ottree_hashroot tht') (hashopair2 (ostree_hashroot sigt') k))) by congruence.
+      apply hashopair2inj in L1.
+      destruct L1 as [_ H4].
+      apply hashopair2inj in H4.
+      destruct H4 as [_ H4].
+      exact H4.
     - exact H2i.
   }
   destruct H2l as [T [H2la H2lb]].
   change (ledgerroot_valid (newledgerroot bh)).
-  rewrite <- H2la.
+  rewrite H2la.
   unfold ledgerroot_valid.
   unfold ctree_valid.
-  assert (L1: octree_supports_tx 0 (tx_of_Block (bh,bd)) (Some (ctree_of_Block (bh,bd))) 0 (rewfn 0)).
-  { exact (tx_of_Block_supported 0 (rewfn 0) check_hit targetf (bh,bd) LT H2). }
+  exists (tx_update_ottree (tx_of_Block (bh, bd)) tht). exists (tx_update_ostree (tx_of_Block (bh, bd)) sigt). exists (ctree_hashroot T).
+  split; try reflexivity.
+  assert (L1: octree_supports_tx tht sigt 0 (tx_of_Block (bh,bd)) (Some (ctree_of_Block (bh,bd))) 0 (rewfn 0)).
+  { exact (tx_of_Block_supported tht sigt 0 (rewfn 0) check_hit targetf (bh,bd) LT H2). }
   apply (mtree_hashroot_eq_valid (ctree_mtree T)).
   + rewrite mtree_hashroot_ctree_hashroot.
     rewrite mtree_hashroot_ctree_hashroot.
     rewrite ctree_hashroot_ctree_H.
     reflexivity.
-  + destruct H1 as [f [H1a H1b]].
+  + destruct H1 as [tht' [sigt' [k [E1 [f [H1a H1b]]]]]].
+    assert (Lk : ctree_hashroot (prevledger bh) = k).
+    { assert (Ek : hashopair2 (ottree_hashroot tht) (hashopair2 (ostree_hashroot sigt) (ctree_hashroot (prevledger bh))) = hashopair2 (ottree_hashroot tht') (hashopair2 (ostree_hashroot sigt') k)) by congruence.
+      apply hashopair2inj in Ek.
+      destruct Ek as [_ Ek].
+      apply hashopair2inj in Ek.
+      destruct Ek as [_ Ek].
+      exact Ek.
+    }
     assert (LTf: octree_approx_fun_p (Some (ctree_of_Block (bh,bd))) f).
-    { exact (endledgerroot_plr_valid_lem1 None genlr ti bh bd f H1b H2ad H2i). }
+    { exact (endledgerroot_plr_valid_lem1 None genlr k ti bh bd f H1b Lk H2i). }
     exists (tx_statefun_trans 0 (tx_of_Block (bh,bd)) f). split.
-    * { apply sf_tx_valid_thm with (bday := 0) (fee := 0) (rew := (rewfn 0)).
+    * { apply sf_tx_valid_thm with (tht := tht) (sigt := sigt) (bday := 0) (fee := 0) (rew := (rewfn 0)).
         - exact H1a.
         - revert H2. apply tx_of_Block_valid.
-        - assert (L2: mtree_supports_tx 0 (tx_of_Block (bh, bd))
+        - assert (L2: mtree_supports_tx tht sigt 0 (tx_of_Block (bh, bd))
                                         (octree_mtree (Some (ctree_of_Block (bh, bd)))) 0 
                                         (rewfn 0)).
           { revert L1. apply octree_mtree_supports_tx. }
@@ -1331,7 +1562,7 @@ intros H1. induction bc as [ti [bh bd]|pbh plr ti n bc IH [bh bd]].
           set (tx' := (tx_of_Block (bh,bd))).
           set (T' := (ctree_of_Block (bh,bd))).
           assert (L5: octree_approx_fun_p (tx_octree_trans 0 tx' (Some T')) (tx_statefun_trans 0 tx' f)).
-          { apply (octree_approx_trans 0 tx' (Some T') f 0 (rewfn 0)).
+          { apply (octree_approx_trans tht sigt 0 tx' (Some T') f 0 (rewfn 0)).
             - exact H1a.
             - unfold tx'. unfold T'. revert H2. apply tx_of_Block_supported.
               exact LT.
@@ -1343,45 +1574,64 @@ intros H1. induction bc as [ti [bh bd]|pbh plr ti n bc IH [bh bd]].
         unfold octree_mtree in L4.
         exact L4.
       }
-- intros [H3 H2].
+- intros [H3 [tht [sigt H2]]].
   generalize H2.
   intros [[H2aa [H2ab [H2ac [H2ad [H2ae [H2af [H2ag H2ah]]]]]]] [H2b [H2c [H2d [H2e [H2f [H2g [H2h [H2i [H2j [H2k H2l]]]]]]]]]]].
   assert (LT: ctree_valid (ctree_of_Block (bh,bd))).
   { unfold ctree_of_Block. apply ctree_valid_cgraft_valid.
     - generalize (IH H3). unfold ledgerroot_valid. unfold ctree_valid.
+      intros [tht' [sigt' [k [H3a H3b]]]].
+      revert H3b.
       apply mtree_hashroot_eq_valid.
       rewrite mtree_hashroot_ctree_hashroot.
       rewrite mtree_hashroot_ctree_hashroot.
-      rewrite ctree_hashroot_ctree_H.
-      f_equal. exact H2ad.
+      rewrite ctree_hashroot_ctree_H. f_equal.
+      assert (Ek : hashopair2 (ottree_hashroot tht) (hashopair2 (ostree_hashroot sigt) (ctree_hashroot (prevledger bh))) = hashopair2 (ottree_hashroot tht') (hashopair2 (ostree_hashroot sigt') k)) by congruence.
+      apply hashopair2inj in Ek.
+      destruct Ek as [_ Ek].
+      apply hashopair2inj in Ek.
+      destruct Ek as [_ Ek].
+      exact Ek.
     - exact H2i.
   }
   destruct H2l as [T [H2la H2lb]].
   change (ledgerroot_valid (newledgerroot bh)).
-  rewrite <- H2la.
+  rewrite H2la.
   unfold ledgerroot_valid.
   unfold ctree_valid.
-  assert (L1: octree_supports_tx (S n) (tx_of_Block (bh,bd)) (Some (ctree_of_Block (bh,bd))) 0 (rewfn (S n))).
-  { exact (tx_of_Block_supported (S n) (rewfn (S n)) check_hit targetf (bh,bd) LT H2). }
+  assert (L1: octree_supports_tx tht sigt (S n) (tx_of_Block (bh,bd)) (Some (ctree_of_Block (bh,bd))) 0 (rewfn (S n))).
+  { exact (tx_of_Block_supported tht sigt (S n) (rewfn (S n)) check_hit targetf (bh,bd) LT H2). }
+  exists (tx_update_ottree (tx_of_Block (bh, bd)) tht).
+  exists (tx_update_ostree (tx_of_Block (bh, bd)) sigt).
+  exists (ctree_hashroot T).
+  split; try reflexivity.
   apply (mtree_hashroot_eq_valid (ctree_mtree T)).
   + rewrite mtree_hashroot_ctree_hashroot.
     rewrite mtree_hashroot_ctree_hashroot.
     rewrite ctree_hashroot_ctree_H.
     reflexivity.
-  + destruct (IH H3) as [f [H1a H1b]].
+  + destruct (IH H3) as [tht' [sigt' [k [H1a [f [H1b H1c]]]]]].
+    assert (Lk : ctree_hashroot (prevledger bh) = k).
+    { assert (Ek : hashopair2 (ottree_hashroot tht) (hashopair2 (ostree_hashroot sigt) (ctree_hashroot (prevledger bh))) = hashopair2 (ottree_hashroot tht') (hashopair2 (ostree_hashroot sigt') k)) by congruence.
+      apply hashopair2inj in Ek.
+      destruct Ek as [_ Ek].
+      apply hashopair2inj in Ek.
+      destruct Ek as [_ Ek].
+      exact Ek.
+    }
     assert (LTf: octree_approx_fun_p (Some (ctree_of_Block (bh,bd))) f).
-    { exact (endledgerroot_plr_valid_lem1 _ _ ti bh bd f H1b H2ad H2i). }
+    { exact (endledgerroot_plr_valid_lem1 _ _ k ti bh bd f H1c Lk H2i). }
     exists (tx_statefun_trans (S n) (tx_of_Block (bh,bd)) f). split.
-    * { apply sf_tx_valid_thm with (bday := (S n)) (fee := 0) (rew := (rewfn (S n))).
-        - exact H1a.
+    * { apply sf_tx_valid_thm with (tht := tht) (sigt := sigt) (bday := (S n)) (fee := 0) (rew := (rewfn (S n))).
+        - exact H1b.
         - revert H2. apply tx_of_Block_valid.
-        - assert (L2: mtree_supports_tx (S n) (tx_of_Block (bh, bd))
+        - assert (L2: mtree_supports_tx tht sigt (S n) (tx_of_Block (bh, bd))
                                         (octree_mtree (Some (ctree_of_Block (bh, bd)))) 0 
                                         (rewfn (S n))).
           { revert L1. apply octree_mtree_supports_tx. }
           apply mtree_supports_tx_statefun with (f := f) in L2.
           + exact L2.
-          + destruct H1a as [_ [Hf2 _]]. exact Hf2.
+          + destruct H1b as [_ [Hf2 _]]. exact Hf2.
           + unfold octree_approx_fun_p in LTf.
             exact LTf.
       }
@@ -1390,8 +1640,8 @@ intros H1. induction bc as [ti [bh bd]|pbh plr ti n bc IH [bh bd]].
           set (tx' := (tx_of_Block (bh,bd))).
           set (T' := (ctree_of_Block (bh,bd))).
           assert (L5: octree_approx_fun_p (tx_octree_trans (S n) tx' (Some T')) (tx_statefun_trans (S n) tx' f)).
-          { apply (octree_approx_trans (S n) tx' (Some T') f 0 (rewfn (S n))).
-            - exact H1a.
+          { apply (octree_approx_trans tht sigt (S n) tx' (Some T') f 0 (rewfn (S n))).
+            - exact H1b.
             - unfold tx'. unfold T'. revert H2. apply tx_of_Block_supported.
               exact LT.
             - unfold T'. exact LTf.
@@ -1428,46 +1678,60 @@ Opaque tx_statefun_trans.
 Opaque tx_octree_trans.
 Opaque mtree_approx_fun_p.
 
-Theorem endledgerroot_plr_sum_correct initdistr al bl rewfn check_hit targetf {genlr pbh plr ti n}
+Theorem endledgerroot_plr_sum_bdd (tht tht2:option (ttree 160)) (sigt sigt2:option (stree 160)) k k2 initdistr al bl rewfn check_hit targetf {genlr pbh plr ti n}
       (bc : @BlockChain genlr pbh plr ti n) :
-  ledgerroot_valid genlr ->
-  octree_totalassets (Some (ctreeH 162 genlr)) al ->
+  hashopair2 (ottree_hashroot tht) (hashopair2 (ostree_hashroot sigt) k) = genlr ->
+  ctree_valid (ctreeH 162 k) ->
+  octree_totalassets (Some (ctreeH 162 k)) al ->
   asset_value_sum al = initdistr ->
   valid_BlockChain rewfn check_hit targetf bc ->
-  octree_totalassets (Some (ctreeH 162 plr)) bl ->
-  asset_value_sum bl = units_as_of_block initdistr rewfn (S n).
-intros H1 H2 H3. revert bl.
+  hashopair2 (ottree_hashroot tht2) (hashopair2 (ostree_hashroot sigt2) k2) = plr ->
+  octree_totalassets (Some (ctreeH 162 k2)) bl ->
+  asset_value_sum bl <= units_as_of_block initdistr rewfn (S n).
+intros H0 H1 H2 H3. revert tht2 sigt2 k2 bl.
 induction bc as [ti [bh bd]|pbh plr ti n bc IH [bh bd]].
-- intros bl H4 H5.
+- intros tht2 sigt2 k2 bl [tht' [sigt' H4]] H5a H5b.
   simpl. unfold valid_BlockChain in H4.
   generalize H4.
   intros [[H4aa [H4ab [H4ac [H4ad [H4ae [H4af [H4ag H4ah]]]]]]] [H4b [H4c [H4d [H4e [H4f [H4g [H4h [H4i [H4j [H4k [T [HT1 HT2]]]]]]]]]]]]].
-  assert (L0: ctree_hashroot (ctree_of_Block(bh,bd)) = genlr).
-  { transitivity (ctree_hashroot (prevledger bh)).
-    - unfold ctree_of_Block. symmetry.
+  assert (L0: hashopair2 (ottree_hashroot tht) (hashopair2 (ostree_hashroot sigt) (ctree_hashroot (ctree_of_Block(bh,bd)))) = genlr). (*** [+] ***)
+  { transitivity (hashopair2 (ottree_hashroot tht) (hashopair2 (ostree_hashroot sigt) (ctree_hashroot (prevledger bh)))).
+    - f_equal. f_equal. unfold ctree_of_Block. symmetry.
       apply subqc_hashroot_eq. apply ctree_cgraft_subqc. exact H4i.
-    - exact H4ad.
+    - rewrite <- H0. f_equal. f_equal.
+      rewrite <- H4ad in H0.
+      apply hashopair2inj in H0. destruct H0 as [_ H0].
+      apply hashopair2inj in H0. destruct H0 as [_ H0].
+      symmetry. exact H0.
   }
   assert (L1: octree_valid (Some (ctree_of_Block (bh, bd)))).
-  { unfold octree_valid. revert H1. unfold ledgerroot_valid. unfold ctree_valid.
+  { unfold octree_valid. revert H1.
+    unfold ctree_valid.
     apply mtree_hashroot_eq_valid.
     rewrite mtree_hashroot_ctree_hashroot.
     rewrite mtree_hashroot_ctree_hashroot.
-    rewrite L0.
     rewrite ctree_hashroot_ctree_H.
-    reflexivity.
+    f_equal.
+    rewrite <- H0 in L0.
+    apply hashopair2inj in L0. destruct L0 as [_ L0].
+    apply hashopair2inj in L0. destruct L0 as [_ L0].
+    exact L0.
   }
   assert (L2: tx_valid 0 (tx_of_Block (bh, bd))).
   { revert H4. apply tx_of_Block_valid. }
-  assert (L3: octree_supports_tx 0 (tx_of_Block (bh, bd)) (Some (ctree_of_Block (bh, bd))) 0 (rewfn 0)).
+  assert (L3: octree_supports_tx tht' sigt' 0 (tx_of_Block (bh, bd)) (Some (ctree_of_Block (bh, bd))) 0 (rewfn 0)).
   { unfold octree_supports_tx. revert L1 H4. unfold octree_valid. apply tx_of_Block_supported. }
   generalize L1. intros [f [Hf HTf]].
-  assert (L4: mtree_approx_fun_p (ctree_mtree (ctreeH 162 genlr)) f).
+  assert (L4: mtree_approx_fun_p (ctree_mtree (ctreeH 162 k)) f).
   { revert HTf. apply mtree_hashroot_mtree_approx_fun_p.
-    rewrite mtree_hashroot_ctree_hashroot. rewrite L0.
+    rewrite mtree_hashroot_ctree_hashroot.
     rewrite mtree_hashroot_ctree_hashroot.
     rewrite ctree_hashroot_ctree_H.
-    reflexivity.
+    f_equal.
+    rewrite <- H0 in L0.
+    apply hashopair2inj in L0. destruct L0 as [_ L0].
+    apply hashopair2inj in L0. destruct L0 as [_ L0].
+    exact L0.
   }
   assert (L5: octree_totalassets (Some (ctree_of_Block (bh, bd))) al).
   { unfold octree_totalassets. unfold octree_mtree.
@@ -1479,7 +1743,7 @@ induction bc as [ti [bh bd]|pbh plr ti n bc IH [bh bd]].
                 (tx_octree_trans 0 (tx_of_Block (bh, bd))
                                  (Some (ctree_of_Block (bh, bd))))
                 (tx_statefun_trans 0 (tx_of_Block (bh, bd)) f)).
-  { apply (octree_approx_trans 0 (tx_of_Block (bh,bd)) (Some (ctree_of_Block (bh,bd))) f 0 (rewfn 0) Hf L3).
+  { apply (octree_approx_trans tht' sigt' 0 (tx_of_Block (bh,bd)) (Some (ctree_of_Block (bh,bd))) f 0 (rewfn 0) Hf L3).
     unfold octree_approx_fun_p. unfold octree_mtree.
     exact HTf.
   }
@@ -1491,7 +1755,7 @@ induction bc as [ti [bh bd]|pbh plr ti n bc IH [bh bd]].
   { rewrite HT2.
     unfold octree_totalassets. unfold octree_mtree.
     apply (mtree_approx_fun_p_totalassets _ _ _ L7).
-    revert H5.
+    revert H5b.
     unfold octree_totalassets. unfold octree_mtree.
     apply mtree_approx_fun_p_totalassets.
     revert L7. unfold octree_approx_fun_p.
@@ -1500,88 +1764,130 @@ induction bc as [ti [bh bd]|pbh plr ti n bc IH [bh bd]].
     rewrite mtree_hashroot_ctree_hashroot.
     rewrite mtree_hashroot_ctree_hashroot.
     rewrite ctree_hashroot_ctree_H.
-    rewrite HT1. reflexivity.
+    assert (E1: hashopair2 (ottree_hashroot tht2) (hashopair2 (ostree_hashroot sigt2) k2) = hashopair2 (ottree_hashroot (tx_update_ottree (tx_of_Block (bh, bd)) tht')) (hashopair2 (ostree_hashroot (tx_update_ostree (tx_of_Block (bh, bd)) sigt')) (ctree_hashroot T))).
+    { transitivity (newledgerroot bh).
+      - exact H5a.
+      - exact HT1.
+    }
+    apply hashopair2inj in E1. destruct E1 as [_ E1].
+    apply hashopair2inj in E1. destruct E1 as [_ E1].
+    rewrite E1. reflexivity.
   }
-  generalize (octree_tx_asset_value_sum 0 (Some (ctree_of_Block (bh,bd))) (tx_of_Block (bh,bd)) 0 (rewfn 0) al bl L1 L2 L3 L5 L8).
+  generalize (octree_tx_asset_value_sum tht' sigt' 0 (Some (ctree_of_Block (bh,bd))) (tx_of_Block (bh,bd)) 0 (rewfn 0) al bl L1 L2 L3 L5 L8).
   rewrite H3.
   assert (L9: asset_value_sum bl + 0 = asset_value_sum bl).
   { clear. omega. }
-  rewrite L9. exact (fun H => H).
-- intros bl [H4 H5] H6.
+  rewrite L9.
+  intros H. rewrite <- H. clear. omega.
+- intros tht2 sigt2 k2 bl [H4 [tht' [sigt' H5]]] H6a H6b.
   generalize H5.
   intros [[H5aa [H5ab [H5ac [H5ad [H5ae [H5af [H5ag H5ah]]]]]]] [H5b [H5c [H5d [H5e [H5f [H5g [H5h [H5i [H5j [H5k [T [HT1 HT2]]]]]]]]]]]]].
   assert (Lplr: ledgerroot_valid plr).
-  { revert H1 H4. apply endledgerroot_plr_valid. }
-  generalize Lplr. intros [f [Hf Hplrf]].
-  assert (LIH: asset_value_sum (totalassets_ f) = units_as_of_block initdistr rewfn (S n)).
-  { apply IH.
+  { revert H4. apply endledgerroot_plr_valid.
+    exists tht. exists sigt. exists k.
+    split.
+    - symmetry. exact H0.
+    - exact H1.
+  }
+  generalize Lplr. intros [tht3 [sigt3 [k3 [Hplr [f [Hf Hplrf]]]]]].
+  assert (LIH: asset_value_sum (totalassets_ f) <= units_as_of_block initdistr rewfn (S n)).
+  { apply (IH tht3 sigt3 k3).
     - exact H4.
+    - symmetry. exact Hplr.
     - unfold octree_totalassets. unfold octree_mtree.
       apply (mtree_approx_fun_p_totalassets _ _ _ Hplrf).
       reflexivity.
   }
-  change (asset_value_sum bl = units_as_of_block initdistr rewfn (S n) + rewfn (S n)).
-  rewrite <- LIH.
-  assert (L0: ctree_hashroot (ctree_of_Block(bh,bd)) = plr).
-  { transitivity (ctree_hashroot (prevledger bh)).
-    - unfold ctree_of_Block. symmetry.
-      apply subqc_hashroot_eq. apply ctree_cgraft_subqc. exact H5i.
-    - exact H5ad.
-  }
-  assert (L1: octree_valid (Some (ctree_of_Block (bh, bd)))).
-  { unfold octree_valid. revert Lplr. unfold ledgerroot_valid. unfold ctree_valid.
-    apply mtree_hashroot_eq_valid.
-    rewrite mtree_hashroot_ctree_hashroot.
-    rewrite mtree_hashroot_ctree_hashroot.
-    rewrite L0.
-    rewrite ctree_hashroot_ctree_H.
-    reflexivity.
-  }
-  assert (L2: tx_valid (S n) (tx_of_Block (bh, bd))).
-  { revert H5. apply tx_of_Block_valid. }
-  assert (L3: octree_supports_tx (S n) (tx_of_Block (bh, bd)) (Some (ctree_of_Block (bh, bd))) 0 (rewfn (S n))).
-  { unfold octree_supports_tx. revert L1 H5. unfold octree_valid. apply tx_of_Block_supported. }
-  assert (L4: mtree_approx_fun_p (ctree_mtree (ctree_of_Block (bh,bd))) f).
-  { revert Hplrf. apply mtree_hashroot_mtree_approx_fun_p.
-    rewrite mtree_hashroot_ctree_hashroot.
-    rewrite mtree_hashroot_ctree_hashroot. rewrite L0.
-    rewrite ctree_hashroot_ctree_H.
-    reflexivity.
-  }
-  assert (L5: octree_totalassets (Some (ctree_of_Block (bh, bd))) (totalassets_ f)).
-  { unfold octree_totalassets. unfold octree_mtree.
-    apply (mtree_approx_fun_p_totalassets _ _ _ L4).
-    reflexivity.
-  }
-  assert (L6: octree_approx_fun_p
-                (tx_octree_trans (S n) (tx_of_Block (bh, bd))
-                                 (Some (ctree_of_Block (bh, bd))))
-                (tx_statefun_trans (S n) (tx_of_Block (bh, bd)) f)).
-  { apply (octree_approx_trans (S n) (tx_of_Block (bh,bd)) (Some (ctree_of_Block (bh,bd))) f 0 (rewfn (S n)) Hf L3).
-    unfold octree_approx_fun_p. unfold octree_mtree.
-    exact L4.
-  }
-  assert (L7: octree_approx_fun_p (Some T) (tx_statefun_trans (S n) (tx_of_Block (bh, bd)) f)).
-  { unfold octree_approx_fun_p. rewrite <- HT2.
-    exact L6.
-  }
-  assert (L8: octree_totalassets (tx_octree_trans (S n) (tx_of_Block (bh, bd)) (Some (ctree_of_Block (bh, bd)))) bl).
-  { rewrite HT2.
-    unfold octree_totalassets. unfold octree_mtree.
-    apply (mtree_approx_fun_p_totalassets _ _ _ L7).
-    revert H6.
-    unfold octree_totalassets. unfold octree_mtree.
-    apply mtree_approx_fun_p_totalassets.
-    revert L7. unfold octree_approx_fun_p.
-    apply mtree_hashroot_mtree_approx_fun_p.
-    unfold octree_mtree.
-    rewrite mtree_hashroot_ctree_hashroot.
-    rewrite mtree_hashroot_ctree_hashroot.
-    rewrite ctree_hashroot_ctree_H.
-    rewrite HT1. reflexivity.
-  }
-  generalize (octree_tx_asset_value_sum (S n) (Some (ctree_of_Block (bh,bd))) (tx_of_Block (bh,bd)) 0 (rewfn (S n)) (totalassets_ f) bl L1 L2 L3 L5 L8).
-  assert (L9: asset_value_sum bl + 0 = asset_value_sum bl).
-  { clear. omega. }
-  rewrite L9. exact (fun H => H).
+  change (asset_value_sum bl <= units_as_of_block initdistr rewfn (S n) + rewfn (S n)).
+  transitivity (asset_value_sum (totalassets_ f) + rewfn (S n)).
+  + assert (L0: hashopair2 (ottree_hashroot tht') (hashopair2 (ostree_hashroot sigt') (ctree_hashroot (ctree_of_Block(bh,bd)))) = plr).
+    { 
+      transitivity (hashopair2 (ottree_hashroot tht') (hashopair2 (ostree_hashroot sigt') (ctree_hashroot (prevledger bh)))).
+      - f_equal. f_equal. unfold ctree_of_Block. symmetry.
+        apply subqc_hashroot_eq. apply ctree_cgraft_subqc. exact H5i.
+      - exact H5ad.
+    }
+    assert (L1: octree_valid (Some (ctree_of_Block (bh, bd)))).
+    { unfold octree_valid. revert Lplr.
+      intros [tht4 [sigt4 [k4 [H7 H8]]]].
+      revert H8.
+      unfold ctree_valid.
+      apply mtree_hashroot_eq_valid.
+      rewrite mtree_hashroot_ctree_hashroot.
+      rewrite mtree_hashroot_ctree_hashroot.
+      rewrite ctree_hashroot_ctree_H.
+      f_equal.
+      rewrite H7 in L0.
+      apply hashopair2inj in L0. destruct L0 as [_ L0].
+      apply hashopair2inj in L0. destruct L0 as [_ L0].
+      exact L0.
+    }
+    assert (L2: tx_valid (S n) (tx_of_Block (bh, bd))).
+    { revert H5. apply tx_of_Block_valid. }
+    assert (L3: octree_supports_tx tht' sigt' (S n) (tx_of_Block (bh, bd)) (Some (ctree_of_Block (bh, bd))) 0 (rewfn (S n))).
+    { unfold octree_supports_tx. revert L1 H5. unfold octree_valid. apply tx_of_Block_supported. }
+    assert (LTf: octree_approx_fun_p (Some (ctree_of_Block (bh,bd))) f).
+    { revert H5i. apply (endledgerroot_plr_valid_lem1 _ _ k3 ti bh bd f Hplrf).
+      rewrite <- H5ad in Hplr.
+      apply hashopair2inj in Hplr. destruct Hplr as [_ Hplr].
+      apply hashopair2inj in Hplr. destruct Hplr as [_ Hplr].
+      exact Hplr.
+    }
+    assert (L4: mtree_approx_fun_p (ctree_mtree (ctree_of_Block (bh,bd))) f).
+    { revert Hplrf. apply mtree_hashroot_mtree_approx_fun_p.
+      rewrite mtree_hashroot_ctree_hashroot.
+      rewrite mtree_hashroot_ctree_hashroot.
+      f_equal.
+      rewrite Hplr in L0.
+      apply hashopair2inj in L0. destruct L0 as [_ L0].
+      apply hashopair2inj in L0. destruct L0 as [_ L0].
+      rewrite <- L0.
+      rewrite ctree_hashroot_ctree_H.
+      reflexivity.
+    }
+    assert (L5: octree_totalassets (Some (ctree_of_Block (bh, bd))) (totalassets_ f)).
+    { unfold octree_totalassets. unfold octree_mtree.
+      apply (mtree_approx_fun_p_totalassets _ _ _ L4).
+      reflexivity.
+    }
+    assert (L6: octree_approx_fun_p
+                  (tx_octree_trans (S n) (tx_of_Block (bh, bd))
+                                   (Some (ctree_of_Block (bh, bd))))
+                  (tx_statefun_trans (S n) (tx_of_Block (bh, bd)) f)).
+    { apply (octree_approx_trans tht' sigt' (S n) (tx_of_Block (bh,bd)) (Some (ctree_of_Block (bh,bd))) f 0 (rewfn (S n)) Hf L3).
+      unfold octree_approx_fun_p. unfold octree_mtree.
+      exact L4.
+    }
+    assert (L7: octree_approx_fun_p (Some T) (tx_statefun_trans (S n) (tx_of_Block (bh, bd)) f)).
+    { unfold octree_approx_fun_p. rewrite <- HT2.
+      exact L6.
+    }
+    assert (L8: octree_totalassets (tx_octree_trans (S n) (tx_of_Block (bh, bd)) (Some (ctree_of_Block (bh, bd)))) bl).
+    { rewrite HT2.
+      unfold octree_totalassets. unfold octree_mtree.
+      apply (mtree_approx_fun_p_totalassets _ _ _ L7).
+      revert H6b.
+      unfold octree_totalassets. unfold octree_mtree.
+      apply mtree_approx_fun_p_totalassets.
+      revert L7. unfold octree_approx_fun_p.
+      apply mtree_hashroot_mtree_approx_fun_p.
+      unfold octree_mtree.
+      rewrite mtree_hashroot_ctree_hashroot.
+      rewrite mtree_hashroot_ctree_hashroot.
+      rewrite ctree_hashroot_ctree_H.
+      assert (E1: hashopair2 (ottree_hashroot tht2) (hashopair2 (ostree_hashroot sigt2) k2) = hashopair2 (ottree_hashroot (tx_update_ottree (tx_of_Block (bh, bd)) tht')) (hashopair2 (ostree_hashroot (tx_update_ostree (tx_of_Block (bh, bd)) sigt')) (ctree_hashroot T))).
+      { transitivity (newledgerroot bh).
+        - exact H6a.
+        - exact HT1.
+      }
+      apply hashopair2inj in E1. destruct E1 as [_ E1].
+      apply hashopair2inj in E1. destruct E1 as [_ E1].
+      rewrite E1. reflexivity.
+    }
+    generalize (octree_tx_asset_value_sum tht' sigt' (S n) (Some (ctree_of_Block (bh,bd))) (tx_of_Block (bh,bd)) 0 (rewfn (S n)) (totalassets_ f) bl L1 L2 L3 L5 L8).
+    assert (L9: asset_value_sum bl + 0 = asset_value_sum bl).
+    { clear. omega. }
+    rewrite L9. 
+    intros H. rewrite <- H. clear. omega.
+  + revert LIH. clear. intros H. omega.
 Qed.
