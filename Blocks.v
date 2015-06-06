@@ -112,7 +112,7 @@ Definition valid_BlockHeader (tht: option (ttree 160)) (sigt: option (stree 160)
       n > blockheight + not_close_to_mature))
   /\
   (*** The stake outputs must be valid. ***)
-  tx_outputs_valid blockheight (stakeoutput bh)
+  tx_outputs_valid (stakeoutput bh)
   /\
   (*** The stake outputs must explicitly say that they cannot be spent until at least blockheight + maturation_post_staking. ***)
   (forall alpha obl u, In (alpha,(obl,u)) (stakeoutput bh) -> exists a n, obl = Some(a,n) /\ n > blockheight + maturation_post_staking)
@@ -190,8 +190,8 @@ Definition valid_Block tht sigt (blockheight:nat) (rew:nat) (check_hit : hitfun)
                    /\
                    tx_signatures_valid blockheight einpl (tx,sl))
   /\
-  (*** Each transaction in the delta is valid at this block height. ***)
-  (forall stx, In stx (blockdelta_stxl bd) -> tx_valid blockheight (fst stx))
+  (*** Each transaction in the delta is valid. ***)
+  (forall stx, In stx (blockdelta_stxl bd) -> tx_valid (fst stx))
   /\
   (*** No transaction has the stake asset as an input. ***)
   (forall tx, In_dom tx (blockdelta_stxl bd) -> ~ In (payaddr_addr (stakeaddr bh),stakeassetid bh) (tx_inputs tx))
@@ -263,7 +263,7 @@ end.
 
 Lemma tx_of_Block_valid tht sigt blockheight rew check_hit targetf {pbh plr ti} (b:@Block pbh plr ti) :
   valid_Block tht sigt blockheight rew check_hit targetf b ->
-  tx_valid blockheight (tx_of_Block b).
+  tx_valid (tx_of_Block b).
 destruct b as [bh bd].
 intros HvB. generalize HvB.
 intros [[HvBaa [HvBab [HvBac [HvBad [HvBae [HvBaf [HvBag HvBah]]]]]]] [HvBb [HvBc [HvBd [HvBe [HvBf [HvBg [HvBh [HvBi [HvBj [HvBk HvBl]]]]]]]]]]].
@@ -1717,7 +1717,7 @@ induction bc as [ti [bh bd]|pbh plr ti n bc IH [bh bd]].
     apply hashopair2inj in L0. destruct L0 as [_ L0].
     exact L0.
   }
-  assert (L2: tx_valid 0 (tx_of_Block (bh, bd))).
+  assert (L2: tx_valid (tx_of_Block (bh, bd))).
   { revert H4. apply tx_of_Block_valid. }
   assert (L3: octree_supports_tx tht' sigt' 0 (tx_of_Block (bh, bd)) (Some (ctree_of_Block (bh, bd))) 0 (rewfn 0)).
   { unfold octree_supports_tx. revert L1 H4. unfold octree_valid. apply tx_of_Block_supported. }
@@ -1822,7 +1822,7 @@ induction bc as [ti [bh bd]|pbh plr ti n bc IH [bh bd]].
       apply hashopair2inj in L0. destruct L0 as [_ L0].
       exact L0.
     }
-    assert (L2: tx_valid (S n) (tx_of_Block (bh, bd))).
+    assert (L2: tx_valid (tx_of_Block (bh, bd))).
     { revert H5. apply tx_of_Block_valid. }
     assert (L3: octree_supports_tx tht' sigt' (S n) (tx_of_Block (bh, bd)) (Some (ctree_of_Block (bh, bd))) 0 (rewfn (S n))).
     { unfold octree_supports_tx. revert L1 H5. unfold octree_valid. apply tx_of_Block_supported. }

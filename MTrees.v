@@ -2376,7 +2376,7 @@ Opaque mtree_full_approx_addr.
 Theorem mtree_supports_tx_statefun_conv tht sigt m tx (T:mtree 162) f fee rew :
   (forall h alpha u alpha' u', In (h,u) (f alpha) -> In (h,u') (f alpha') -> alpha = alpha' /\ u = u') ->
   mtree_approx_fun_p T f ->  
-  tx_valid m tx ->
+  tx_valid tx ->
   mtree_can_support_tx tx T ->
   statefun_supports_tx tht sigt m f tx fee rew ->
   mtree_supports_tx tht sigt m tx T fee rew.
@@ -3363,7 +3363,7 @@ Qed.
 
 Theorem mtree_normalize_tx_asset_value_sum tht sigt (blockheight:nat) (T:mtree 162) (tx:Tx) (fee rew:nat) (al bl:list asset) :
   mtree_valid T ->
-  tx_valid blockheight tx ->
+  tx_valid tx ->
   mtree_supports_tx tht sigt blockheight tx T fee rew ->
   mtree_totalassets T al ->
   mtree_totalassets (normalize_mtree (tx_mtree_trans blockheight tx T)) bl ->
@@ -3385,7 +3385,7 @@ apply (totalunits_bdd tht sigt blockheight f tx fee rew H1).
 Qed.
 
 Theorem mtree_valid_tx_mtree_trans tht sigt m tx T fee rew :
-  tx_valid m tx ->
+  tx_valid tx ->
   mtree_supports_tx tht sigt m tx T fee rew ->
   mtree_valid T ->
   mtree_valid (tx_mtree_trans m tx T).

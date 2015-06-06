@@ -2277,7 +2277,7 @@ Qed.
 Theorem ctree_supports_tx_statefun_conv tht sigt m tx (T:ctree 162) f fee rew :
   (forall h alpha u alpha' u', In (h,u) (f alpha) -> In (h,u') (f alpha') -> alpha = alpha' /\ u = u') ->
   mtree_approx_fun_p (ctree_mtree T) f ->  
-  tx_valid m tx ->
+  tx_valid tx ->
   ctree_can_support_tx tx T ->
   statefun_supports_tx tht sigt m f tx fee rew ->
   ctree_supports_tx tht sigt m tx T fee rew.
@@ -5448,7 +5448,7 @@ Qed.
 
 Theorem octree_tx_asset_value_sum tht sigt (blockheight:nat) (T:option (ctree 162)) (tx:Tx) (fee rew:nat) (al bl:list asset) :
   octree_valid T ->
-  tx_valid blockheight tx ->
+  tx_valid tx ->
   octree_supports_tx tht sigt blockheight tx T fee rew ->
   octree_totalassets T al ->
   octree_totalassets (tx_octree_trans blockheight tx T) bl ->
@@ -5490,7 +5490,7 @@ exact (H2 h alpha u beta v H6 H7).
 Qed.
 
 Theorem octree_valid_tx_octree_trans tht sigt m tx T fee rew :
-  tx_valid m tx ->
+  tx_valid tx ->
   ctree_supports_tx tht sigt m tx T fee rew ->
   ctree_valid T ->
   octree_valid (tx_octree_trans m tx (Some T)).

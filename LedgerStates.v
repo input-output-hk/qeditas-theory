@@ -303,7 +303,7 @@ Qed.
 Lemma statefun_supports_tx_owns_trans (tht:option (ttree 160)) (sigt:option (stree 160))
       blkheight (f:statefun) (tx:Tx) fee rew :
   sf_valid f ->
-  tx_valid blkheight tx ->
+  tx_valid tx ->
   statefun_supports_tx tht sigt blkheight f tx fee rew ->
   forall alpha b obl beta u h bday' obl' gamma v, In (alpha,(obl,owns b beta u)) (tx_outputs tx) -> In (h,(bday',(obl',owns b gamma v))) (f alpha) -> In (alpha,h) (tx_inputs tx).
 intros Hf [_ [_ [Htxo2 _]]] [_ [_ [_ [Hs5 _]]]] alpha b obl beta u h bday' obl' gamma v H1 H2.
@@ -365,7 +365,7 @@ Qed.
 
 (** If a txout h was spent in the transformed state, then it was either already spent or was one of the inputs of the new tx. ***)
 Lemma sf_tx_valid_spent_lem tht sigt bday inpl outpl f h fee rew :
-  tx_valid bday (inpl,outpl) ->
+  tx_valid (inpl,outpl) ->
   statefun_supports_tx tht sigt bday f (inpl,outpl) fee rew ->
   sf_spent (tx_statefun_trans bday (inpl, outpl) f) h ->
   sf_spent f h \/ exists alpha, In (alpha,h) inpl.
@@ -399,7 +399,7 @@ Qed.
 
 Theorem sf_tx_valid_thm tht sigt bday (f:statefun) (tx:Tx) fee rew :
   sf_valid f ->
-  tx_valid bday tx ->
+  tx_valid tx ->
   statefun_supports_tx tht sigt bday f tx fee rew ->
   sf_valid (tx_statefun_trans bday tx f).
 intros Hf Ht Hs.
@@ -619,7 +619,7 @@ Opaque statefun_totalassets.
 
 Lemma totalassets_trans_iff tht sigt m (f:statefun) (tx:Tx) fee rew :
  sf_valid f ->
- tx_valid m tx ->
+ tx_valid tx ->
  statefun_supports_tx tht sigt m f tx fee rew ->
  forall h bday obl u,
    In (h,(bday,(obl,u))) (statefun_totalassets (tx_statefun_trans m tx f)) <->
@@ -998,7 +998,7 @@ Qed.
 
 Theorem totalunits_bdd tht sigt m (f:statefun) (tx:Tx) (fee rew:nat) :
  sf_valid f ->
- tx_valid m tx ->
+ tx_valid tx ->
  statefun_supports_tx tht sigt m f tx fee rew ->
  statefun_totalunits (tx_statefun_trans m tx f) + fee + out_burncost (tx_outputs tx) = statefun_totalunits f + rew.
 intros Hf Ht Hs. generalize Hs. intros [[utot [H1 H2]] _].

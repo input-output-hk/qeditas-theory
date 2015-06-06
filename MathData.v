@@ -27,9 +27,7 @@ Inductive trm : Type :=
 | Imp : trm -> trm -> trm
 | All : stp -> trm -> trm.
 
-(*** Gpa is to abbreviate parts of the pf term. It should never occur in documents, but will likely occur in partial documents used as part of PoR. ***)
 Inductive pf : Type :=
-| Gpa : hashval -> pf
 | PDb : nat -> pf
 | Gpn : hashval -> list stp -> pf
 | PAp : pf -> pf -> pf
@@ -110,7 +108,6 @@ Fixpoint trm_hashroot (th:option hashval) (m:trm) : hashval :=
 
 Fixpoint ser_pf (d:pf) : list nat :=
 match d with
-| Gpa h => 6::ser_hashval h
 | PDb n => 0::n::nil
 | Gpn h al => 1::(ser_hashval h) ++ ser_stp_l al
 | PAp d e => 2::(ser_pf d) ++ (ser_pf e)
@@ -122,7 +119,6 @@ end.
 (*** This hashes a proof term. ***)
 Fixpoint hashpf (d:pf) : hashval :=
 match d with
-| Gpa h => hashpair (hashnat 54) h
 | PDb n => hashpair (hashnat 17) (hashnat n)
 | Gpn h al => hashpair (hashnat 18) (hashopair1 h (hashstpl al))
 | PAp d e => hashpair (hashnat 19) (hashpair (hashpf d) (hashpf e))
@@ -134,7 +130,6 @@ end.
 (*** This computes a hashroot for a proof term relative to a theory. ***)
 Fixpoint pf_hashroot (th:option hashval) (d:pf) : hashval :=
   match d with
-    | Gpa h => h
     | PDb i => hashopair2 th (hashpair (hashnat 23) (hashnat i))
     | Gpn h al => hashopair2 th (hashpair (hashnat 24) (hashopair1 h (hashstpl al)))
     | PAp d e => hashopair2 th (hashpair (hashnat 25) (hashpair (pf_hashroot th d) (pf_hashroot th e)))
@@ -733,11 +728,8 @@ generalize (ser_trm_inj_lem m m' nil nil L1). tauto.
 Qed.
 
 Lemma ser_pf_inj_lem d d' l l' : ser_pf d ++ l = ser_pf d' ++ l' -> l = l' /\ d = d'.
-revert d' l l'. induction d as [h|n|h al|d IHd e IHe|d IHd n|n d IHd|a d IHd]; intros [h'|n'|h' al'|d' e'|d' n'|n' d'|a' d'] l l' H1; simpl in H1;
+revert d' l l'. induction d as [n|h al|d IHd e IHe|d IHd n|n d IHd|a d IHd]; intros [n'|h' al'|d' e'|d' n'|n' d'|a' d'] l l' H1; simpl in H1;
                 try now (exfalso; inversion H1).
-- inversion H1.
-  destruct (ser_hashval_inj h h' _ _ H0) as [H2 H3].
-  split; congruence.
 - inversion H1. tauto.
 - rewrite <- app_assoc in H1. rewrite <- app_assoc in H1.
   inversion H1.
@@ -925,9 +917,8 @@ revert m'. induction m as [h|i al|n|m IHm n IHn|a m IHm|m IHm n IHn|a m IHm]; in
 Qed.
 
 Lemma hashpfinj d d' : hashpf d = hashpf d' -> d = d'.
-revert d'. induction d as [h|n|h al|d IHd e IHe|d IHd n|n d IHd|a d IHd]; intros [h'|n'|h' al'|d' e'|d' n'|n' d'|a' d'] H1; simpl in H1;
+revert d'. induction d as [n|h al|d IHd e IHe|d IHd n|n d IHd|a d IHd]; intros [n'|h' al'|d' e'|d' n'|n' d'|a' d'] H1; simpl in H1;
            try (exfalso; apply hashpairinj in H1; destruct H1 as [H1 _]; apply hashnatinj in H1; omega).
-- apply hashpairinj in H1. destruct H1 as [_ H1]. congruence.
 - apply hashpairinj in H1. destruct H1 as [_ H1]. apply hashnatinj in H1.
   congruence.
 - apply hashpairinj in H1. destruct H1 as [_ H1].

@@ -255,7 +255,7 @@ inpl <> nil (*** without this, two tx can have the same hashes. ***)
 no_dups inpl (*** inputs cannot be listed more than once. ***)
 .
 
-Definition tx_outputs_valid (blockheight:nat) (outpl:list addr_preasset) : Prop :=
+Definition tx_outputs_valid (outpl:list addr_preasset) : Prop :=
 (*** Can't declare 2 owners (exception: owns false vs. owns true; can have one owner as an object [the one who defined it] and another as a prop [the one who proved it]) ***)
 (forall alpha i obl beta u i' obl' beta' u' b,
   nth_error outpl i = value(alpha,(obl,owns b beta u))
@@ -279,8 +279,8 @@ Definition tx_outputs_valid (blockheight:nat) (outpl:list addr_preasset) : Prop 
    In (alpha,(obl,docpublication beta nonce th d)) outpl -> pubaddr_addr (hashval_pubaddr (doc_hashroot th d)) = alpha)
 .
 
-Definition tx_valid (blockheight:nat) (tx:Tx) : Prop :=
-tx_inputs_valid (tx_inputs tx) /\ tx_outputs_valid blockheight (tx_outputs tx).
+Definition tx_valid (tx:Tx) : Prop :=
+tx_inputs_valid (tx_inputs tx) /\ tx_outputs_valid (tx_outputs tx).
 
 (*** Signed Transactions ***)
 Inductive gensignat : Type :=
